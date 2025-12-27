@@ -1,0 +1,31 @@
+{
+  "name": "oanda-proxy",
+  "version": "1.0.0",
+  "main": "oanda_proxy_production.js",
+  "scripts": {
+    "start": "node oanda_proxy_production.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+```
+
+### Step 4: Add Environment Variables
+
+In Railway, go to the **Variables** tab and add:
+```
+OANDA_ACCOUNT_ID = 101-004-37956081-001
+OANDA_API_TOKEN = 673519b725c06d9e71b1eff404a38d33-81178e52a2898b5c459044dfa5bac1bd
+OANDA_ENVIRONMENT = practice
+```
+
+### Step 5: Deploy!
+
+Railway will automatically deploy. You'll get a URL like:
+```
+https://oanda-proxy-production-xxxx.up.railway.app
