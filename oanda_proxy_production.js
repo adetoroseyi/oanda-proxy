@@ -1,58 +1,45 @@
-// Complete oanda_proxy_production.js for Render - VNMR Classic with News Filtering
-// This replaces your existing oanda_proxy_production.js
-
 const express = require('express');
 const cors = require('cors');
+const https = require('https');
 const fetch = require('node-fetch');
-require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
+// ================================================
+// ORIGINAL OANDA CONFIGURATION (UNCHANGED)
+// ================================================
+const OANDA_CONFIG = {
+    accountId: process.env.OANDA_ACCOUNT_ID || '101-004-37956081-001',
+    apiToken: process.env.OANDA_API_TOKEN || '673519b725c06d9e71b1eff404a38d33-81178e52a2898b5c459044dfa5bac1bd',
+    environment: process.env.OANDA_ENVIRONMENT || 'practice'
+};
+
+const PORT = process.env.PORT || 3001;
+
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// ===========================================
-// OANDA API PROXY (EXISTING)
-// ===========================================
+const getOandaHost = () => {
+    return OANDA_CONFIG.environment === 'live' 
+        ? 'api-fxtrade.oanda.com'
+        : 'api-fxpractice.oanda.com';
+};
 
-const OANDA_API_KEY = process.env.OANDA_API_KEY;
-const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
-const OANDA_BASE_URL = 'https://api-fxpractice.oanda.com';
-
-// Proxy endpoint for OANDA candles
-app.get('/api/v3/instruments/:instrument/candles', async (req, res) => {
-    try {
-        const { instrument } = req.params;
-        const queryParams = new URLSearchParams(req.query).toString();
-        
-        const url = `${OANDA_BASE_URL}/v3/instruments/${instrument}/candles?${queryParams}`;
-        
-        const response = await fetch(url, {
-            headers: {
-                'Authorization': `Bearer ${OANDA_API_KEY}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`OANDA API returned ${response.status}`);
-        }
-
-        const data = await response.json();
-        res.json(data);
-
-    } catch (error) {
-        console.error('OANDA Proxy Error:', error);
-        res.status(500).json({ error: error.message });
-    }
+// ================================================
+// ORIGINAL HEALTH CHECK (UNCHANGED)
+// ================================================
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        environment: OANDA_CONFIG.environment,
+        accountId: OANDA_CONFIG.accountId,
+        timestamp: new Date().toISOString()
+    });
 });
 
-// ===========================================
-// NEWS API (NEW)
-// ===========================================
-
+// ================================================
+// NEWS API ENDPOINTS (NEW)
+// ================================================
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const RELEVANT_CURRENCIES = ['USD', 'EUR', 'GBP', 'AUD', 'NZD', 'CHF', 'JPY'];
 
@@ -199,36 +186,69 @@ app.post('/api/news-refresh', (req, res) => {
     });
 });
 
-// ===========================================
-// HEALTH CHECK
-// ===========================================
+// ================================================
+// ORIGINAL OANDA PROXY (UNCHANGED)
+// ================================================
+app.all('/api/*', (req, res) => {
+    // Skip if it's a news endpoint (already handled above)
+    if (req.path.startsWith('/api/news-')) {
+        return; // Already handled by news endpoints
+    }
 
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        timestamp: new Date().toISOString(),
-        services: {
-            oanda: !!OANDA_API_KEY,
-            news: !!FMP_API_KEY
+    const oandaPath = req.path.replace('/api', '');
+    const fullPath = oandaPath + (req.url.includes('?') ? '?' + req.url.split('?')[1] : '');
+    
+    const options = {
+        hostname: getOandaHost(),
+        port: 443,
+        path: fullPath,
+        method: req.method,
+        headers: {
+            'Authorization': `Bearer ${OANDA_CONFIG.apiToken}`,
+            'Accept-Datetime-Format': 'RFC3339',
+            'Content-Type': 'application/json'
         }
+    };
+
+    const proxyReq = https.request(options, (proxyRes) => {
+        let data = '';
+        res.status(proxyRes.statusCode);
+        
+        proxyRes.on('data', (chunk) => { data += chunk; });
+        proxyRes.on('end', () => {
+            try {
+                res.json(JSON.parse(data));
+            } catch (e) {
+                res.send(data);
+            }
+        });
     });
+
+    proxyReq.on('error', (error) => {
+        res.status(500).json({ error: error.message });
+    });
+
+    if (req.body && Object.keys(req.body).length > 0) {
+        proxyReq.write(JSON.stringify(req.body));
+    }
+
+    proxyReq.end();
 });
 
-// ===========================================
+// ================================================
 // START SERVER
-// ===========================================
-
-app.listen(PORT, () => {
+// ================================================
+app.listen(PORT, '0.0.0.0', () => {
     console.log('========================================');
-    console.log(`✅ Server running on port ${PORT}`);
-    console.log(`📊 OANDA API: ${OANDA_API_KEY ? 'Configured' : 'Missing'}`);
+    console.log(`✅ Proxy server running on port ${PORT}`);
+    console.log(`📊 OANDA Environment: ${OANDA_CONFIG.environment}`);
     console.log(`📰 News API: ${FMP_API_KEY ? 'Configured' : 'Missing'}`);
     console.log('========================================');
     console.log('Available endpoints:');
-    console.log('  - GET  /api/v3/instruments/:instrument/candles');
+    console.log('  - GET  /health');
     console.log('  - GET  /api/news-events');
     console.log('  - GET  /api/news-health');
     console.log('  - POST /api/news-refresh');
-    console.log('  - GET  /health');
+    console.log('  - ALL  /api/* (OANDA proxy)');
     console.log('========================================');
 });
