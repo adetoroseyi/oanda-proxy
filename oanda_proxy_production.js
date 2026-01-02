@@ -1,6 +1,7 @@
 // ================================================
-// OANDA PROXY SERVER - LIQUIDITY SWEEP SCANNER v4
-// With HTF Bias, Direction Filter, Session Warnings, News, Multi-TP
+// OANDA PROXY SERVER - LIQUIDITY SWEEP SCANNER v5
+// With Signal Scoring System (A+ Grade Filter)
+// News Bias: Manual Toggle Only (No API)
 // ================================================
 
 const express = require('express');
@@ -19,7 +20,6 @@ const OANDA_CONFIG = {
     environment: process.env.OANDA_ENVIRONMENT || 'practice'
 };
 
-const FMP_API_KEY = process.env.FMP_API_KEY;
 const PORT = process.env.PORT || 3001;
 
 // Liquidity Analysis Configuration
@@ -36,7 +36,6 @@ const LIQUIDITY_CONFIG = {
     AVAILABLE_TIMEFRAMES: ['M30', 'H1', 'H4', 'D'],
     DEFAULT_TIMEFRAME: 'H1',
     
-    // Higher timeframe mapping for bias
     HTF_MAP: {
         'M30': 'H4',
         'H1': 'H4',
@@ -46,28 +45,88 @@ const LIQUIDITY_CONFIG = {
     
     EQUAL_LEVEL_TOLERANCE: 0.0003,
     DISPLACEMENT_ATR_MULTIPLE: 1.5,
-    MIN_REWARD_RISK: 2.5,
+    MIN_REWARD_RISK: 2.0,
     MAX_EQUAL_LEVELS: 3,
     MAX_SIGNALS_PER_INSTRUMENT: 2,
     
     DAILY_TIMEFRAME: 'D',
     
-    // Session times in UTC
     SESSIONS: {
         ASIAN:  { start: 0, end: 8 },
         LONDON: { start: 7, end: 16 },
         NY:     { start: 13, end: 22 }
     },
     
-    // Equity open warning (9:30 AM ET = 14:30 UTC)
-    EQUITY_OPEN_UTC: 14.5, // 14:30
+    EQUITY_OPEN_UTC: 14.5,
     EQUITY_OPEN_WARNING_MINUTES: 30,
     
-    // TP Levels (as percentage of full range)
     TP_LEVELS: {
-        TP1: 0.5,    // 50% of range
-        TP2: 0.75,   // 75% of range
-        RUNNER: 1.0  // Full target (100%)
+        TP1: 0.5,
+        TP2: 0.75,
+        RUNNER: 1.0
+    },
+    
+    // Scoring Configuration
+    SCORING: {
+        LEVEL_POINTS: {
+            'PDH': 25,
+            'PDL': 25,
+            'Previous Day High': 25,
+            'Previous Day Low': 25,
+            'ASIAN_HIGH': 18,
+            'ASIAN_LOW': 18,
+            'Asian Session High': 18,
+            'Asian Session Low': 18,
+            'LONDON_HIGH': 18,
+            'LONDON_LOW': 18,
+            'London Session High': 18,
+            'London Session Low': 18,
+            'NY_HIGH': 18,
+            'NY_LOW': 18,
+            'EQUAL_HIGH': 12,
+            'EQUAL_LOW': 12
+        },
+        
+        DISPLACEMENT: {
+            STRONG: 25,
+            NORMAL: 18,
+            WEAK: 8,
+            NONE: 0
+        },
+        
+        FVG: {
+            PRESENT: 20,
+            ABSENT: 0
+        },
+        
+        HTF: {
+            ALIGNED: 15,
+            NEUTRAL: 8,
+            AGAINST: 0
+        },
+        
+        RR: {
+            EXCELLENT: { min: 4, points: 15 },
+            VERY_GOOD: { min: 3, points: 12 },
+            ACCEPTABLE: { min: 2.5, points: 8 },
+            MINIMUM: { min: 2, points: 4 },
+            POOR: { min: 0, points: 0 }
+        },
+        
+        // News Bias: Manual toggle adds/subtracts points
+        NEWS: {
+            ALIGNED: 10,
+            NEUTRAL: 0,
+            AGAINST: -10
+        },
+        
+        GRADES: {
+            'A+': 90,
+            'A': 80,
+            'B': 70,
+            'C': 60,
+            'D': 0
+        }
     }
 };
 
@@ -77,12 +136,6 @@ let liquidityCache = {
     data: null,
     signals: [],
     cacheKey: null
-};
-
-// News cache
-let newsCache = {
-    events: [],
-    lastFetch: null
 };
 
 app.use(cors({ origin: '*' }));
@@ -296,13 +349,21 @@ const detectSweep = (candles, level, type, atr, displacementMultiple = 1.5) => {
         const currOpen = parseFloat(curr.mid.o);
         const currClose = parseFloat(curr.mid.c);
         
+        const bodySize = Math.abs(currClose - currOpen);
+        
+        let displacementStrength = 'NONE';
+        let displacementATR = 0;
+        if (atr > 0) {
+            displacementATR = bodySize / atr;
+            if (displacementATR > 2) displacementStrength = 'STRONG';
+            else if (displacementATR > 1.5) displacementStrength = 'NORMAL';
+            else if (displacementATR > 1) displacementStrength = 'WEAK';
+        }
+        
         if (type === 'LOW') {
             const swept = prevLow < level || currLow < level;
             const closedAbove = currClose > level;
             const bullishCandle = currClose > currOpen;
-            
-            const bodySize = Math.abs(currClose - currOpen);
-            const hasDisplacement = bodySize > (atr * displacementMultiple);
             
             if (swept && closedAbove && bullishCandle) {
                 const fvg = detectFVG(candles, candles.length - 1);
@@ -310,7 +371,9 @@ const detectSweep = (candles, level, type, atr, displacementMultiple = 1.5) => {
                     direction: 'LONG',
                     sweepLow: Math.min(prevLow, currLow),
                     entryPrice: currClose,
-                    hasDisplacement,
+                    hasDisplacement: displacementStrength !== 'NONE',
+                    displacementStrength,
+                    displacementATR,
                     fvg,
                     confirmationCandle: curr
                 };
@@ -322,16 +385,15 @@ const detectSweep = (candles, level, type, atr, displacementMultiple = 1.5) => {
             const closedBelow = currClose < level;
             const bearishCandle = currClose < currOpen;
             
-            const bodySize = Math.abs(currClose - currOpen);
-            const hasDisplacement = bodySize > (atr * displacementMultiple);
-            
             if (swept && closedBelow && bearishCandle) {
                 const fvg = detectFVG(candles, candles.length - 1);
                 return {
                     direction: 'SHORT',
                     sweepHigh: Math.max(prevHigh, currHigh),
                     entryPrice: currClose,
-                    hasDisplacement,
+                    hasDisplacement: displacementStrength !== 'NONE',
+                    displacementStrength,
+                    displacementATR,
                     fvg,
                     confirmationCandle: curr
                 };
@@ -343,22 +405,19 @@ const detectSweep = (candles, level, type, atr, displacementMultiple = 1.5) => {
 };
 
 // ================================================
-// NEW: HIGHER TIMEFRAME BIAS
+// HTF BIAS
 // ================================================
 
 const calculateHTFBias = (htfCandles) => {
     if (!htfCandles || htfCandles.length < 20) return 'NEUTRAL';
     
-    // Get recent candles for analysis
     const recent = htfCandles.slice(-20);
     
-    // Method 1: Compare current price to 20-period SMA
     let sum = 0;
     recent.forEach(c => sum += parseFloat(c.mid.c));
     const sma20 = sum / recent.length;
     const currentPrice = parseFloat(recent[recent.length - 1].mid.c);
     
-    // Method 2: Check recent swing structure (higher highs/lows or lower highs/lows)
     const lastCandle = recent[recent.length - 1];
     const prevCandle = recent[recent.length - 2];
     const thirdCandle = recent[recent.length - 3];
@@ -370,15 +429,11 @@ const calculateHTFBias = (htfCandles) => {
     const thirdHigh = parseFloat(thirdCandle.mid.h);
     const thirdLow = parseFloat(thirdCandle.mid.l);
     
-    // Check for higher highs and higher lows (bullish)
     const higherHighs = lastHigh > prevHigh && prevHigh > thirdHigh;
     const higherLows = lastLow > prevLow && prevLow > thirdLow;
-    
-    // Check for lower highs and lower lows (bearish)
     const lowerHighs = lastHigh < prevHigh && prevHigh < thirdHigh;
     const lowerLows = lastLow < prevLow && prevLow < thirdLow;
     
-    // Combine signals
     let bullishScore = 0;
     let bearishScore = 0;
     
@@ -396,7 +451,7 @@ const calculateHTFBias = (htfCandles) => {
 };
 
 // ================================================
-// NEW: SESSION WARNING
+// SESSION WARNING
 // ================================================
 
 const getSessionWarning = () => {
@@ -405,11 +460,10 @@ const getSessionWarning = () => {
     const utcMinutes = now.getUTCMinutes();
     const currentTime = utcHours + (utcMinutes / 60);
     
-    // Equity open is 14:30 UTC (9:30 AM ET)
     const equityOpen = LIQUIDITY_CONFIG.EQUITY_OPEN_UTC;
     const warningMinutes = LIQUIDITY_CONFIG.EQUITY_OPEN_WARNING_MINUTES;
     const warningStart = equityOpen - (warningMinutes / 60);
-    const warningEnd = equityOpen + 0.25; // 15 min after open
+    const warningEnd = equityOpen + 0.25;
     
     if (currentTime >= warningStart && currentTime <= warningEnd) {
         const minutesToOpen = Math.round((equityOpen - currentTime) * 60);
@@ -449,81 +503,124 @@ const getCurrentSession = () => {
 };
 
 // ================================================
-// NEW: NEWS INTEGRATION
+// SIGNAL SCORING SYSTEM
 // ================================================
 
-const fetchNewsEvents = async () => {
-    if (!FMP_API_KEY) return [];
+const calculateSignalScore = (signal, config = {}) => {
+    const SCORING = LIQUIDITY_CONFIG.SCORING;
+    const newsBias = config.newsBias || 'NONE'; // BULLISH, BEARISH, or NONE (manual toggle)
     
-    // Return cached if fresh (less than 30 min)
-    if (newsCache.events.length > 0 && newsCache.lastFetch) {
-        const cacheAge = Date.now() - newsCache.lastFetch;
-        if (cacheAge < 30 * 60 * 1000) {
-            return newsCache.events;
+    let score = 0;
+    let breakdown = {};
+    
+    // 1. Level Quality (0-25 points)
+    let levelPoints = 12;
+    const levelType = signal.setupType || '';
+    
+    if (levelType.includes('Previous Day') || levelType.includes('PDH') || levelType.includes('PDL')) {
+        levelPoints = 25;
+    } else if (levelType.includes('Session') || levelType.includes('Asian') || levelType.includes('London') || levelType.includes('NY')) {
+        levelPoints = 18;
+    } else if (levelType.includes('Equal')) {
+        levelPoints = 12;
+    }
+    
+    score += levelPoints;
+    breakdown.levelQuality = { points: levelPoints, max: 25, reason: levelType };
+    
+    // 2. Displacement (0-25 points)
+    let displacementPoints = SCORING.DISPLACEMENT.NONE;
+    let displacementReason = 'None';
+    
+    if (signal.displacementStrength === 'STRONG') {
+        displacementPoints = SCORING.DISPLACEMENT.STRONG;
+        displacementReason = `Strong (${(signal.displacementATR || 0).toFixed(1)}x ATR)`;
+    } else if (signal.displacementStrength === 'NORMAL') {
+        displacementPoints = SCORING.DISPLACEMENT.NORMAL;
+        displacementReason = `Normal (${(signal.displacementATR || 0).toFixed(1)}x ATR)`;
+    } else if (signal.displacementStrength === 'WEAK') {
+        displacementPoints = SCORING.DISPLACEMENT.WEAK;
+        displacementReason = `Weak (${(signal.displacementATR || 0).toFixed(1)}x ATR)`;
+    }
+    
+    score += displacementPoints;
+    breakdown.displacement = { points: displacementPoints, max: 25, reason: displacementReason };
+    
+    // 3. FVG (0-20 points)
+    const fvgPoints = signal.hasFVG ? SCORING.FVG.PRESENT : SCORING.FVG.ABSENT;
+    score += fvgPoints;
+    breakdown.fvg = { points: fvgPoints, max: 20, reason: signal.hasFVG ? 'Present' : 'Absent' };
+    
+    // 4. HTF Confluence (0-15 points)
+    let htfPoints = SCORING.HTF.NEUTRAL;
+    let htfReason = 'Neutral';
+    
+    if (signal.htfConfluence === 'ALIGNED') {
+        htfPoints = SCORING.HTF.ALIGNED;
+        htfReason = `Aligned (${signal.htfBias})`;
+    } else if (signal.htfConfluence === 'AGAINST') {
+        htfPoints = SCORING.HTF.AGAINST;
+        htfReason = `Against (${signal.htfBias})`;
+    }
+    
+    score += htfPoints;
+    breakdown.htfConfluence = { points: htfPoints, max: 15, reason: htfReason };
+    
+    // 5. R:R (0-15 points)
+    let rrPoints = 0;
+    const rr = signal.rewardRisk || 0;
+    
+    if (rr >= SCORING.RR.EXCELLENT.min) {
+        rrPoints = SCORING.RR.EXCELLENT.points;
+    } else if (rr >= SCORING.RR.VERY_GOOD.min) {
+        rrPoints = SCORING.RR.VERY_GOOD.points;
+    } else if (rr >= SCORING.RR.ACCEPTABLE.min) {
+        rrPoints = SCORING.RR.ACCEPTABLE.points;
+    } else if (rr >= SCORING.RR.MINIMUM.min) {
+        rrPoints = SCORING.RR.MINIMUM.points;
+    }
+    
+    score += rrPoints;
+    breakdown.rewardRisk = { points: rrPoints, max: 15, reason: `${rr.toFixed(1)}:1` };
+    
+    // 6. News Bias Bonus/Penalty (-10 to +10) - MANUAL TOGGLE
+    let newsPoints = SCORING.NEWS.NEUTRAL;
+    let newsReason = 'No news bias set';
+    
+    if (newsBias !== 'NONE') {
+        const signalDirection = signal.direction;
+        
+        if ((newsBias === 'BULLISH' && signalDirection === 'LONG') ||
+            (newsBias === 'BEARISH' && signalDirection === 'SHORT')) {
+            newsPoints = SCORING.NEWS.ALIGNED;
+            newsReason = `Aligned with ${newsBias} bias`;
+        } else {
+            newsPoints = SCORING.NEWS.AGAINST;
+            newsReason = `Against ${newsBias} bias`;
         }
     }
     
-    try {
-        const fetch = (await import('node-fetch')).default;
-        const response = await fetch(
-            `https://financialmodelingprep.com/api/v3/economic_calendar?apikey=${FMP_API_KEY}`
-        );
-        const data = await response.json();
-        
-        // Filter high impact events in next 24 hours
-        const now = new Date();
-        const next24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-        
-        const highImpactEvents = (data || []).filter(event => {
-            const eventDate = new Date(event.date);
-            const isUpcoming = eventDate >= now && eventDate <= next24h;
-            const isHighImpact = event.impact === 'High' || event.impact === 'high';
-            return isUpcoming && isHighImpact;
-        });
-        
-        newsCache.events = highImpactEvents;
-        newsCache.lastFetch = Date.now();
-        
-        return highImpactEvents;
-    } catch (error) {
-        console.error('News fetch error:', error);
-        return newsCache.events; // Return stale cache on error
-    }
-};
-
-const getNewsForCurrency = (instrument, newsEvents) => {
-    // Extract currencies from instrument
-    const currencies = instrument.replace('_', '/').split('/');
+    score += newsPoints;
+    breakdown.newsBias = { points: newsPoints, max: 10, min: -10, reason: newsReason };
     
-    // Currency to country mapping
-    const currencyCountry = {
-        'USD': ['US', 'United States'],
-        'EUR': ['EU', 'Euro', 'Germany', 'France'],
-        'GBP': ['UK', 'United Kingdom', 'Britain'],
-        'JPY': ['JP', 'Japan'],
-        'AUD': ['AU', 'Australia'],
-        'NZD': ['NZ', 'New Zealand'],
-        'CAD': ['CA', 'Canada'],
-        'CHF': ['CH', 'Switzerland']
+    // Calculate Grade
+    let grade = 'D';
+    if (score >= SCORING.GRADES['A+']) grade = 'A+';
+    else if (score >= SCORING.GRADES['A']) grade = 'A';
+    else if (score >= SCORING.GRADES['B']) grade = 'B';
+    else if (score >= SCORING.GRADES['C']) grade = 'C';
+    
+    return {
+        score,
+        maxScore: 110,
+        grade,
+        breakdown,
+        isPerfect: grade === 'A+'
     };
-    
-    const relevantEvents = newsEvents.filter(event => {
-        const eventCountry = event.country || '';
-        const eventCurrency = event.currency || '';
-        
-        return currencies.some(curr => {
-            const countries = currencyCountry[curr] || [];
-            return countries.some(c => 
-                eventCountry.includes(c) || eventCurrency.includes(curr)
-            );
-        });
-    });
-    
-    return relevantEvents;
 };
 
 // ================================================
-// NEW: MULTIPLE TP LEVELS
+// TP LEVELS
 // ================================================
 
 const calculateTPLevels = (entryPrice, targetPrice, direction) => {
@@ -545,7 +642,7 @@ const calculateTPLevels = (entryPrice, targetPrice, direction) => {
 };
 
 // ================================================
-// ANALYZE INSTRUMENT (Updated)
+// ANALYZE INSTRUMENT
 // ================================================
 
 const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
@@ -557,13 +654,14 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
         const requireDisplacement = config.requireDisplacement || false;
         const requireFVG = config.requireFVG || false;
         const maxEqualLevels = config.maxEqualLevels || LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS;
-        const directionFilter = config.directionFilter || 'BOTH'; // LONG, SHORT, or BOTH
-        const requireHTFConfluence = config.requireHTFConfluence !== false; // Default true
+        const directionFilter = config.directionFilter || 'BOTH';
+        const requireHTFConfluence = config.requireHTFConfluence !== false;
+        const minGrade = config.minGrade || 'D';
+        const newsBias = config.newsBias || 'NONE';
         
         const candleCount = { 'M30': 100, 'H1': 72, 'H4': 42, 'D': 30 }[timeframe] || 72;
         const htfTimeframe = LIQUIDITY_CONFIG.HTF_MAP[timeframe] || 'D';
         
-        // Fetch candles
         const [dailyCandles, analysisCandles, htfCandles] = await Promise.all([
             fetchCandles(instrument, 'D', 10),
             fetchCandles(instrument, timeframe, candleCount),
@@ -578,16 +676,13 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
         const atr = calculateATR(analysisCandles, 14);
         const currentPrice = parseFloat(analysisCandles[analysisCandles.length - 1].mid.c);
         
-        // Calculate HTF Bias
         const htfBias = calculateHTFBias(htfCandles);
         
-        // Get key levels
         const pdh_pdl = getPDHPDL(dailyCandles);
         const asianLevels = getSessionLevels(analysisCandles, 'ASIAN');
         const londonLevels = getSessionLevels(analysisCandles, 'LONDON');
         const equalLevels = findEqualLevels(analysisCandles, equalTolerance, maxEqualLevels);
         
-        // Collect key levels
         const keyLevels = [];
         
         if (pdh_pdl) {
@@ -613,11 +708,13 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
             keyLevels.push({ type: 'EQUAL_LOW', price: eq.level, source: `Equal Lows ${idx + 1}`, priority: 3 });
         });
         
-        // Check for sweeps
         const signals = [];
         const seenDirections = new Set();
         
         keyLevels.sort((a, b) => a.priority - b.priority);
+        
+        const gradeThresholds = { 'A+': 90, 'A': 80, 'B': 70, 'C': 60, 'D': 0 };
+        const minScoreThreshold = gradeThresholds[minGrade] || 0;
         
         for (const level of keyLevels) {
             if (signals.length >= maxSignals) break;
@@ -626,10 +723,8 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
             const sweep = detectSweep(analysisCandles, level.price, isHighLevel ? 'HIGH' : 'LOW', atr, displacementMultiple);
             
             if (sweep) {
-                // Direction filter
                 if (directionFilter !== 'BOTH' && sweep.direction !== directionFilter) continue;
                 
-                // HTF Confluence check
                 if (requireHTFConfluence && htfBias !== 'NEUTRAL') {
                     if (sweep.direction === 'LONG' && htfBias === 'BEARISH') continue;
                     if (sweep.direction === 'SHORT' && htfBias === 'BULLISH') continue;
@@ -638,7 +733,6 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
                 const dirKey = `${sweep.direction}-${level.type.includes('PDH') || level.type.includes('PDL') ? 'PD' : 'OTHER'}`;
                 if (seenDirections.has(dirKey)) continue;
                 
-                // Calculate SL and TP
                 let stopLoss, fullTarget, rewardRisk;
                 
                 if (sweep.direction === 'LONG') {
@@ -655,22 +749,17 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
                     if (requireDisplacement && !sweep.hasDisplacement) continue;
                     if (requireFVG && !sweep.fvg) continue;
                     
-                    seenDirections.add(dirKey);
-                    
-                    // Calculate multiple TP levels
-                    const tpLevels = calculateTPLevels(sweep.entryPrice, fullTarget, sweep.direction);
-                    
-                    // Check HTF confluence status
                     let htfConfluence = 'NEUTRAL';
-                    if (htfBias === sweep.direction.substring(0, sweep.direction.length) || 
-                        (sweep.direction === 'LONG' && htfBias === 'BULLISH') ||
+                    if ((sweep.direction === 'LONG' && htfBias === 'BULLISH') ||
                         (sweep.direction === 'SHORT' && htfBias === 'BEARISH')) {
                         htfConfluence = 'ALIGNED';
                     } else if (htfBias !== 'NEUTRAL') {
                         htfConfluence = 'AGAINST';
                     }
                     
-                    signals.push({
+                    const tpLevels = calculateTPLevels(sweep.entryPrice, fullTarget, sweep.direction);
+                    
+                    const signalObj = {
                         instrument,
                         direction: sweep.direction,
                         setupType: level.source,
@@ -682,6 +771,8 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
                         runner: Math.round(tpLevels.runner / pipSize) * pipSize,
                         rewardRisk: Math.round(rewardRisk * 100) / 100,
                         hasDisplacement: sweep.hasDisplacement,
+                        displacementStrength: sweep.displacementStrength,
+                        displacementATR: sweep.displacementATR,
                         hasFVG: sweep.fvg !== null,
                         fvgDetails: sweep.fvg,
                         htfBias,
@@ -690,12 +781,23 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
                         timestamp: new Date().toISOString(),
                         timeframe,
                         priority: level.priority
-                    });
+                    };
+                    
+                    const scoreResult = calculateSignalScore(signalObj, { newsBias });
+                    signalObj.score = scoreResult.score;
+                    signalObj.grade = scoreResult.grade;
+                    signalObj.scoreBreakdown = scoreResult.breakdown;
+                    signalObj.isPerfect = scoreResult.isPerfect;
+                    
+                    if (scoreResult.score >= minScoreThreshold) {
+                        seenDirections.add(dirKey);
+                        signals.push(signalObj);
+                    }
                 }
             }
         }
         
-        signals.sort((a, b) => a.priority - b.priority || b.rewardRisk - a.rewardRisk);
+        signals.sort((a, b) => b.score - a.score || a.priority - b.priority);
         
         return {
             instrument,
@@ -723,7 +825,7 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
 };
 
 // ================================================
-// SCAN ALL INSTRUMENTS (Updated)
+// SCAN ALL INSTRUMENTS
 // ================================================
 
 const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
@@ -738,15 +840,14 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
         requireFVG: customConfig.requireFVG || false,
         maxEqualLevels: customConfig.maxEqualLevels || LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS,
         directionFilter: customConfig.directionFilter || 'BOTH',
-        requireHTFConfluence: customConfig.requireHTFConfluence !== false
+        requireHTFConfluence: customConfig.requireHTFConfluence !== false,
+        minGrade: customConfig.minGrade || 'D',
+        newsBias: customConfig.newsBias || 'NONE'
     };
     
     if (!LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.includes(timeframe)) {
         timeframe = LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
     }
-    
-    // Fetch news events
-    const newsEvents = await fetchNewsEvents();
     
     const results = [];
     const allSignals = [];
@@ -757,15 +858,6 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
         const batchResults = await Promise.all(batch.map(inst => analyzeInstrument(inst, timeframe, config)));
         
         batchResults.forEach(result => {
-            // Add news warning to signals
-            if (result.signals) {
-                const relevantNews = getNewsForCurrency(result.instrument, newsEvents);
-                result.signals.forEach(signal => {
-                    signal.newsWarning = relevantNews.length > 0;
-                    signal.newsEvents = relevantNews.slice(0, 3); // Max 3 events
-                });
-            }
-            
             results.push(result);
             if (result.signals && result.signals.length > 0) {
                 allSignals.push(...result.signals);
@@ -777,10 +869,14 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
         }
     }
     
-    allSignals.sort((a, b) => (a.priority || 99) - (b.priority || 99) || b.rewardRisk - a.rewardRisk);
+    allSignals.sort((a, b) => b.score - a.score);
     
-    // Get session warning
     const sessionWarning = getSessionWarning();
+    
+    const gradeCounts = { 'A+': 0, 'A': 0, 'B': 0, 'C': 0, 'D': 0 };
+    allSignals.forEach(s => {
+        if (gradeCounts[s.grade] !== undefined) gradeCounts[s.grade]++;
+    });
     
     liquidityCache = {
         lastUpdate: new Date().toISOString(),
@@ -790,20 +886,19 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
         config
     };
     
-    console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals.`);
+    console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals. A+: ${gradeCounts['A+']}, A: ${gradeCounts['A']}, B: ${gradeCounts['B']}`);
     
     return {
         timestamp: liquidityCache.lastUpdate,
         timeframe,
         instrumentsScanned: results.length,
         signalsFound: allSignals.length,
+        gradeCounts,
         instruments: results,
         signals: allSignals,
         appliedSettings: config,
         sessionWarning,
-        currentSession: getCurrentSession(),
-        newsEventsCount: newsEvents.length,
-        upcomingNews: newsEvents.slice(0, 5)
+        currentSession: getCurrentSession()
     };
 };
 
@@ -814,37 +909,23 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
+        version: 'v5',
         environment: OANDA_CONFIG.environment,
         accountId: OANDA_CONFIG.accountId,
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         features: {
             oandaProxy: true,
-            newsApi: !!FMP_API_KEY,
             liquidityScanner: true,
             htfBias: true,
             sessionWarnings: true,
-            multipleTP: true
+            multipleTP: true,
+            signalScoring: true,
+            newsBias: 'manual-toggle'
         }
     });
 });
 
-// News endpoints (existing)
-app.get('/api/news-events', async (req, res) => {
-    const events = await fetchNewsEvents();
-    res.json({ events, count: events.length });
-});
-
-app.get('/api/news-health', (req, res) => {
-    res.json({
-        configured: !!FMP_API_KEY,
-        cachedEvents: newsCache.events.length,
-        lastFetch: newsCache.lastFetch,
-        timestamp: new Date().toISOString()
-    });
-});
-
-// Liquidity scan with all parameters
 app.get('/liquidity/scan', async (req, res) => {
     try {
         const forceRefresh = req.query.refresh === 'true';
@@ -859,7 +940,9 @@ app.get('/liquidity/scan', async (req, res) => {
             requireFVG: req.query.requireFVG === 'true',
             maxEqualLevels: parseInt(req.query.maxEqualLevels) || LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS,
             directionFilter: req.query.directionFilter || 'BOTH',
-            requireHTFConfluence: req.query.requireHTFConfluence !== 'false'
+            requireHTFConfluence: req.query.requireHTFConfluence !== 'false',
+            minGrade: req.query.minGrade || 'D',
+            newsBias: req.query.newsBias || 'NONE'
         };
         
         if (!LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.includes(timeframe)) {
@@ -943,12 +1026,7 @@ app.get('/liquidity/config', (req, res) => {
         availableTimeframes: LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES,
         defaultTimeframe: LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME,
         htfMap: LIQUIDITY_CONFIG.HTF_MAP,
-        thresholds: {
-            equalLevelTolerance: LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE,
-            displacementATRMultiple: LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE,
-            minRewardRisk: LIQUIDITY_CONFIG.MIN_REWARD_RISK,
-            maxSignalsPerInstrument: LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT
-        },
+        scoring: LIQUIDITY_CONFIG.SCORING,
         tpLevels: LIQUIDITY_CONFIG.TP_LEVELS,
         sessions: LIQUIDITY_CONFIG.SESSIONS,
         currentSession: getCurrentSession(),
@@ -966,7 +1044,7 @@ app.post('/liquidity/refresh', async (req, res) => {
     }
 });
 
-// OANDA Proxy (existing)
+// OANDA Proxy
 app.all('/api/*', (req, res) => {
     const oandaPath = req.path.replace('/api', '');
     const fullPath = oandaPath + (req.url.includes('?') ? '?' + req.url.split('?')[1] : '');
@@ -1014,15 +1092,17 @@ app.all('/api/*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log('========================================');
-    console.log('   LIQUIDITY SWEEP SCANNER v4          ');
+    console.log('   LIQUIDITY SWEEP SCANNER v5          ');
+    console.log('   Signal Scoring + Manual News Bias   ');
     console.log('========================================');
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📊 OANDA Environment: ${OANDA_CONFIG.environment}`);
-    console.log(`📰 News API: ${FMP_API_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`🔍 Liquidity Scanner: Active`);
     console.log(`📈 HTF Bias: Enabled`);
     console.log(`⚠️  Session Warnings: Enabled`);
     console.log(`🎯 Multiple TPs: Enabled`);
+    console.log(`⭐ Signal Scoring: Enabled`);
+    console.log(`📰 News Bias: Manual Toggle`);
     console.log(`⏰ Current Session: ${getCurrentSession()}`);
     console.log('========================================');
 });
