@@ -1,7 +1,6 @@
 // ================================================
-// OANDA PROXY SERVER - LIQUIDITY SWEEP SCANNER v5
-// With Signal Scoring System (A+ Grade Filter)
-// News Bias: Manual Toggle Only (No API)
+// SWEEPSIGNAL - LIQUIDITY SWEEP SCANNER v6
+// With Telegram Alerts
 // ================================================
 
 const express = require('express');
@@ -18,6 +17,12 @@ const OANDA_CONFIG = {
     accountId: process.env.OANDA_ACCOUNT_ID || '101-004-37956081-001',
     apiToken: process.env.OANDA_API_TOKEN || '673519b725c06d9e71b1eff404a38d33-81178e52a2898b5c459044dfa5bac1bd',
     environment: process.env.OANDA_ENVIRONMENT || 'practice'
+};
+
+// Telegram Configuration
+const TELEGRAM_CONFIG = {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '8546917458:AAFHqypgClfhf0TrFVGrkcbpLP2BSaUA7F8',
+    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || '7278083298'
 };
 
 const PORT = process.env.PORT || 3001;
@@ -49,8 +54,6 @@ const LIQUIDITY_CONFIG = {
     MAX_EQUAL_LEVELS: 3,
     MAX_SIGNALS_PER_INSTRUMENT: 2,
     
-    DAILY_TIMEFRAME: 'D',
-    
     SESSIONS: {
         ASIAN:  { start: 0, end: 8 },
         LONDON: { start: 7, end: 16 },
@@ -66,45 +69,27 @@ const LIQUIDITY_CONFIG = {
         RUNNER: 1.0
     },
     
-    // Scoring Configuration
+    // Alert Configuration
+    ALERTS: {
+        MIN_GRADE_FOR_ALERT: 'B',  // Alert A+, A, and B grades
+        COOLDOWN_MINUTES: 60,      // Don't re-alert same signal within this time
+        ENABLED: true
+    },
+    
     SCORING: {
         LEVEL_POINTS: {
-            'PDH': 25,
-            'PDL': 25,
-            'Previous Day High': 25,
-            'Previous Day Low': 25,
-            'ASIAN_HIGH': 18,
-            'ASIAN_LOW': 18,
-            'Asian Session High': 18,
-            'Asian Session Low': 18,
-            'LONDON_HIGH': 18,
-            'LONDON_LOW': 18,
-            'London Session High': 18,
-            'London Session Low': 18,
-            'NY_HIGH': 18,
-            'NY_LOW': 18,
-            'EQUAL_HIGH': 12,
-            'EQUAL_LOW': 12
+            'PDH': 25, 'PDL': 25,
+            'Previous Day High': 25, 'Previous Day Low': 25,
+            'ASIAN_HIGH': 18, 'ASIAN_LOW': 18,
+            'Asian Session High': 18, 'Asian Session Low': 18,
+            'LONDON_HIGH': 18, 'LONDON_LOW': 18,
+            'London Session High': 18, 'London Session Low': 18,
+            'NY_HIGH': 18, 'NY_LOW': 18,
+            'EQUAL_HIGH': 12, 'EQUAL_LOW': 12
         },
-        
-        DISPLACEMENT: {
-            STRONG: 25,
-            NORMAL: 18,
-            WEAK: 8,
-            NONE: 0
-        },
-        
-        FVG: {
-            PRESENT: 20,
-            ABSENT: 0
-        },
-        
-        HTF: {
-            ALIGNED: 15,
-            NEUTRAL: 8,
-            AGAINST: 0
-        },
-        
+        DISPLACEMENT: { STRONG: 25, NORMAL: 18, WEAK: 8, NONE: 0 },
+        FVG: { PRESENT: 20, ABSENT: 0 },
+        HTF: { ALIGNED: 15, NEUTRAL: 8, AGAINST: 0 },
         RR: {
             EXCELLENT: { min: 4, points: 15 },
             VERY_GOOD: { min: 3, points: 12 },
@@ -112,21 +97,8 @@ const LIQUIDITY_CONFIG = {
             MINIMUM: { min: 2, points: 4 },
             POOR: { min: 0, points: 0 }
         },
-        
-        // News Bias: Manual toggle adds/subtracts points
-        NEWS: {
-            ALIGNED: 10,
-            NEUTRAL: 0,
-            AGAINST: -10
-        },
-        
-        GRADES: {
-            'A+': 90,
-            'A': 80,
-            'B': 70,
-            'C': 60,
-            'D': 0
-        }
+        NEWS: { ALIGNED: 10, NEUTRAL: 0, AGAINST: -10 },
+        GRADES: { 'A+': 90, 'A': 80, 'B': 70, 'C': 60, 'D': 0 }
     }
 };
 
@@ -138,8 +110,201 @@ let liquidityCache = {
     cacheKey: null
 };
 
+// Alert tracking to prevent duplicates
+let alertedSignals = new Map(); // key: instrument-direction-setupType, value: timestamp
+
+// Telegram subscriber list (for future multi-user support)
+let telegramSubscribers = new Map();
+// Add admin by default
+telegramSubscribers.set(TELEGRAM_CONFIG.adminChatId, {
+    chatId: TELEGRAM_CONFIG.adminChatId,
+    minGrade: 'B',
+    alertsEnabled: true,
+    subscribedAt: new Date().toISOString()
+});
+
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+
+// ================================================
+// TELEGRAM FUNCTIONS
+// ================================================
+
+const sendTelegramMessage = async (chatId, message, parseMode = 'HTML') => {
+    return new Promise((resolve, reject) => {
+        const postData = JSON.stringify({
+            chat_id: chatId,
+            text: message,
+            parse_mode: parseMode,
+            disable_web_page_preview: true
+        });
+        
+        const options = {
+            hostname: 'api.telegram.org',
+            port: 443,
+            path: `/bot${TELEGRAM_CONFIG.botToken}/sendMessage`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData)
+            }
+        };
+        
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.ok) {
+                        resolve(parsed);
+                    } else {
+                        console.error('Telegram API error:', parsed);
+                        reject(new Error(parsed.description || 'Telegram API error'));
+                    }
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        });
+        
+        req.on('error', reject);
+        req.write(postData);
+        req.end();
+    });
+};
+
+const formatSignalAlert = (signal) => {
+    const direction = signal.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+    const gradeEmoji = signal.grade === 'A+' ? '⭐' : signal.grade === 'A' ? '✅' : '🔵';
+    const pair = signal.instrument.replace('_', '/');
+    
+    // Format prices based on instrument
+    const formatPrice = (price) => {
+        if (!price) return '-';
+        if (signal.instrument.includes('JPY')) return parseFloat(price).toFixed(3);
+        if (signal.instrument === 'XAU_USD') return parseFloat(price).toFixed(2);
+        if (signal.instrument === 'NAS100_USD') return parseFloat(price).toFixed(1);
+        return parseFloat(price).toFixed(5);
+    };
+    
+    const message = `
+${gradeEmoji} <b>SWEEPSIGNAL ALERT</b> ${gradeEmoji}
+
+<b>${pair}</b> ${direction}
+Grade: <b>${signal.grade}</b> (Score: ${signal.score}/100)
+
+📍 <b>Setup:</b> ${signal.setupType}
+📊 <b>HTF Bias:</b> ${signal.htfBias} (${signal.htfTimeframe})
+
+━━━━━━━━━━━━━━━━━━
+<b>TRADE LEVELS</b>
+━━━━━━━━━━━━━━━━━━
+▫️ Entry: <code>${formatPrice(signal.entryPrice)}</code>
+🛑 Stop Loss: <code>${formatPrice(signal.stopLoss)}</code>
+
+🎯 TP1 (50%): <code>${formatPrice(signal.tp1)}</code>
+🎯 TP2 (75%): <code>${formatPrice(signal.tp2)}</code>
+🏆 Runner: <code>${formatPrice(signal.runner)}</code>
+
+📈 R:R Ratio: <b>${signal.rewardRisk}:1</b>
+━━━━━━━━━━━━━━━━━━
+
+${signal.hasDisplacement ? '⚡ Displacement: ' + signal.displacementStrength : ''}
+${signal.hasFVG ? '📊 FVG Present' : ''}
+
+⏰ ${new Date().toUTCString()}
+`.trim();
+    
+    return message;
+};
+
+const shouldSendAlert = (signal) => {
+    // Check if alerts are enabled
+    if (!LIQUIDITY_CONFIG.ALERTS.ENABLED) return false;
+    
+    // Check minimum grade
+    const gradeThresholds = { 'A+': 90, 'A': 80, 'B': 70, 'C': 60, 'D': 0 };
+    const minGradeScore = gradeThresholds[LIQUIDITY_CONFIG.ALERTS.MIN_GRADE_FOR_ALERT] || 80;
+    if (signal.score < minGradeScore) return false;
+    
+    // Check cooldown (prevent duplicate alerts)
+    const signalKey = `${signal.instrument}-${signal.direction}-${signal.setupType}`;
+    const lastAlerted = alertedSignals.get(signalKey);
+    
+    if (lastAlerted) {
+        const cooldownMs = LIQUIDITY_CONFIG.ALERTS.COOLDOWN_MINUTES * 60 * 1000;
+        if (Date.now() - lastAlerted < cooldownMs) {
+            return false;
+        }
+    }
+    
+    return true;
+};
+
+const sendSignalAlerts = async (signals) => {
+    if (!signals || signals.length === 0) return;
+    
+    const alertableSignals = signals.filter(shouldSendAlert);
+    
+    for (const signal of alertableSignals) {
+        const message = formatSignalAlert(signal);
+        
+        // Send to all subscribers
+        for (const [chatId, subscriber] of telegramSubscribers) {
+            if (!subscriber.alertsEnabled) continue;
+            
+            // Check subscriber's minimum grade preference
+            const gradeThresholds = { 'A+': 90, 'A': 80, 'B': 70, 'C': 60, 'D': 0 };
+            const minScore = gradeThresholds[subscriber.minGrade] || 80;
+            if (signal.score < minScore) continue;
+            
+            try {
+                await sendTelegramMessage(chatId, message);
+                console.log(`[Telegram] Alert sent to ${chatId} for ${signal.instrument} ${signal.direction}`);
+            } catch (error) {
+                console.error(`[Telegram] Failed to send to ${chatId}:`, error.message);
+            }
+        }
+        
+        // Mark as alerted
+        const signalKey = `${signal.instrument}-${signal.direction}-${signal.setupType}`;
+        alertedSignals.set(signalKey, Date.now());
+    }
+    
+    // Clean up old alert records (older than 24 hours)
+    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    for (const [key, timestamp] of alertedSignals) {
+        if (timestamp < oneDayAgo) {
+            alertedSignals.delete(key);
+        }
+    }
+};
+
+const sendStartupNotification = async () => {
+    const message = `
+🚀 <b>SweepSignal Bot Started</b>
+
+✅ Scanner: Active
+✅ Alerts: Enabled
+📊 Instruments: ${LIQUIDITY_CONFIG.INSTRUMENTS.length}
+⏰ ${new Date().toUTCString()}
+
+You will receive alerts for A+, A, and B grade signals.
+
+Commands:
+/status - Check bot status
+/alerts on - Enable alerts
+/alerts off - Disable alerts
+`.trim();
+    
+    try {
+        await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, message);
+        console.log('[Telegram] Startup notification sent');
+    } catch (error) {
+        console.error('[Telegram] Failed to send startup notification:', error.message);
+    }
+};
 
 // ================================================
 // HELPER FUNCTIONS
@@ -404,10 +569,6 @@ const detectSweep = (candles, level, type, atr, displacementMultiple = 1.5) => {
     return null;
 };
 
-// ================================================
-// HTF BIAS
-// ================================================
-
 const calculateHTFBias = (htfCandles) => {
     if (!htfCandles || htfCandles.length < 20) return 'NEUTRAL';
     
@@ -449,10 +610,6 @@ const calculateHTFBias = (htfCandles) => {
     if (bearishScore >= 3) return 'BEARISH';
     return 'NEUTRAL';
 };
-
-// ================================================
-// SESSION WARNING
-// ================================================
 
 const getSessionWarning = () => {
     const now = new Date();
@@ -503,17 +660,17 @@ const getCurrentSession = () => {
 };
 
 // ================================================
-// SIGNAL SCORING SYSTEM
+// SIGNAL SCORING
 // ================================================
 
 const calculateSignalScore = (signal, config = {}) => {
     const SCORING = LIQUIDITY_CONFIG.SCORING;
-    const newsBias = config.newsBias || 'NONE'; // BULLISH, BEARISH, or NONE (manual toggle)
+    const newsBias = config.newsBias || 'NONE';
     
     let score = 0;
     let breakdown = {};
     
-    // 1. Level Quality (0-25 points)
+    // 1. Level Quality (0-25)
     let levelPoints = 12;
     const levelType = signal.setupType || '';
     
@@ -528,7 +685,7 @@ const calculateSignalScore = (signal, config = {}) => {
     score += levelPoints;
     breakdown.levelQuality = { points: levelPoints, max: 25, reason: levelType };
     
-    // 2. Displacement (0-25 points)
+    // 2. Displacement (0-25)
     let displacementPoints = SCORING.DISPLACEMENT.NONE;
     let displacementReason = 'None';
     
@@ -546,12 +703,12 @@ const calculateSignalScore = (signal, config = {}) => {
     score += displacementPoints;
     breakdown.displacement = { points: displacementPoints, max: 25, reason: displacementReason };
     
-    // 3. FVG (0-20 points)
+    // 3. FVG (0-20)
     const fvgPoints = signal.hasFVG ? SCORING.FVG.PRESENT : SCORING.FVG.ABSENT;
     score += fvgPoints;
     breakdown.fvg = { points: fvgPoints, max: 20, reason: signal.hasFVG ? 'Present' : 'Absent' };
     
-    // 4. HTF Confluence (0-15 points)
+    // 4. HTF Confluence (0-15)
     let htfPoints = SCORING.HTF.NEUTRAL;
     let htfReason = 'Neutral';
     
@@ -566,7 +723,7 @@ const calculateSignalScore = (signal, config = {}) => {
     score += htfPoints;
     breakdown.htfConfluence = { points: htfPoints, max: 15, reason: htfReason };
     
-    // 5. R:R (0-15 points)
+    // 5. R:R (0-15)
     let rrPoints = 0;
     const rr = signal.rewardRisk || 0;
     
@@ -583,7 +740,7 @@ const calculateSignalScore = (signal, config = {}) => {
     score += rrPoints;
     breakdown.rewardRisk = { points: rrPoints, max: 15, reason: `${rr.toFixed(1)}:1` };
     
-    // 6. News Bias Bonus/Penalty (-10 to +10) - MANUAL TOGGLE
+    // 6. News Bias (-10 to +10)
     let newsPoints = SCORING.NEWS.NEUTRAL;
     let newsReason = 'No news bias set';
     
@@ -610,18 +767,8 @@ const calculateSignalScore = (signal, config = {}) => {
     else if (score >= SCORING.GRADES['B']) grade = 'B';
     else if (score >= SCORING.GRADES['C']) grade = 'C';
     
-    return {
-        score,
-        maxScore: 110,
-        grade,
-        breakdown,
-        isPerfect: grade === 'A+'
-    };
+    return { score, maxScore: 110, grade, breakdown, isPerfect: grade === 'A+' };
 };
-
-// ================================================
-// TP LEVELS
-// ================================================
 
 const calculateTPLevels = (entryPrice, targetPrice, direction) => {
     const range = Math.abs(targetPrice - entryPrice);
@@ -828,7 +975,7 @@ const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
 // SCAN ALL INSTRUMENTS
 // ================================================
 
-const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
+const scanAllInstruments = async (timeframe = 'H1', customConfig = {}, sendAlerts = true) => {
     console.log(`[${new Date().toISOString()}] Starting ${timeframe} liquidity scan...`);
     
     const config = {
@@ -888,6 +1035,11 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
     
     console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals. A+: ${gradeCounts['A+']}, A: ${gradeCounts['A']}, B: ${gradeCounts['B']}`);
     
+    // Send Telegram alerts for new signals
+    if (sendAlerts) {
+        await sendSignalAlerts(allSignals);
+    }
+    
     return {
         timestamp: liquidityCache.lastUpdate,
         timeframe,
@@ -909,9 +1061,9 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
-        version: 'v5',
+        version: 'v6',
+        product: 'SweepSignal',
         environment: OANDA_CONFIG.environment,
-        accountId: OANDA_CONFIG.accountId,
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         features: {
@@ -921,7 +1073,13 @@ app.get('/health', (req, res) => {
             sessionWarnings: true,
             multipleTP: true,
             signalScoring: true,
+            telegramAlerts: true,
             newsBias: 'manual-toggle'
+        },
+        telegram: {
+            enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
+            subscribers: telegramSubscribers.size,
+            minGradeForAlert: LIQUIDITY_CONFIG.ALERTS.MIN_GRADE_FOR_ALERT
         }
     });
 });
@@ -954,6 +1112,7 @@ app.get('/liquidity/scan', async (req, res) => {
         
         const cacheKey = JSON.stringify({ timeframe, ...customConfig });
         
+        // Don't send alerts for cached responses
         if (!forceRefresh && liquidityCache.lastUpdate && liquidityCache.cacheKey === cacheKey) {
             const cacheAge = Date.now() - new Date(liquidityCache.lastUpdate).getTime();
             if (cacheAge < 60000) {
@@ -966,7 +1125,7 @@ app.get('/liquidity/scan', async (req, res) => {
             }
         }
         
-        const results = await scanAllInstruments(timeframe, customConfig);
+        const results = await scanAllInstruments(timeframe, customConfig, forceRefresh);
         liquidityCache.cacheKey = cacheKey;
         res.json(results);
         
@@ -1030,15 +1189,82 @@ app.get('/liquidity/config', (req, res) => {
         tpLevels: LIQUIDITY_CONFIG.TP_LEVELS,
         sessions: LIQUIDITY_CONFIG.SESSIONS,
         currentSession: getCurrentSession(),
-        sessionWarning: getSessionWarning()
+        sessionWarning: getSessionWarning(),
+        alerts: LIQUIDITY_CONFIG.ALERTS
     });
 });
 
-app.post('/liquidity/refresh', async (req, res) => {
+// ================================================
+// TELEGRAM ENDPOINTS
+// ================================================
+
+app.post('/telegram/test', async (req, res) => {
     try {
-        const timeframe = req.query.timeframe || req.body.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
-        const results = await scanAllInstruments(timeframe, req.body);
-        res.json({ message: 'Scan refreshed', ...results });
+        const message = `
+🧪 <b>Test Alert</b>
+
+This is a test message from SweepSignal.
+If you see this, Telegram alerts are working!
+
+⏰ ${new Date().toUTCString()}
+`.trim();
+        
+        await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, message);
+        res.json({ success: true, message: 'Test alert sent' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.get('/telegram/status', (req, res) => {
+    res.json({
+        enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
+        botConfigured: !!TELEGRAM_CONFIG.botToken,
+        subscribers: telegramSubscribers.size,
+        minGradeForAlert: LIQUIDITY_CONFIG.ALERTS.MIN_GRADE_FOR_ALERT,
+        cooldownMinutes: LIQUIDITY_CONFIG.ALERTS.COOLDOWN_MINUTES,
+        alertedSignals: alertedSignals.size
+    });
+});
+
+app.post('/telegram/alerts/toggle', (req, res) => {
+    LIQUIDITY_CONFIG.ALERTS.ENABLED = !LIQUIDITY_CONFIG.ALERTS.ENABLED;
+    res.json({ 
+        enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
+        message: `Alerts ${LIQUIDITY_CONFIG.ALERTS.ENABLED ? 'enabled' : 'disabled'}`
+    });
+});
+
+app.post('/telegram/subscribe', async (req, res) => {
+    try {
+        const { chatId, minGrade = 'B' } = req.body;
+        
+        if (!chatId) {
+            return res.status(400).json({ error: 'chatId required' });
+        }
+        
+        telegramSubscribers.set(String(chatId), {
+            chatId: String(chatId),
+            minGrade,
+            alertsEnabled: true,
+            subscribedAt: new Date().toISOString()
+        });
+        
+        // Send welcome message
+        const message = `
+✅ <b>Subscribed to SweepSignal!</b>
+
+You will receive alerts for ${minGrade}+ grade signals.
+Default: A+, A, and B grades.
+
+Commands:
+/status - Check status
+/alerts off - Disable alerts
+`.trim();
+        
+        await sendTelegramMessage(chatId, message);
+        
+        res.json({ success: true, subscriber: telegramSubscribers.get(String(chatId)) });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -1087,27 +1313,58 @@ app.all('/api/*', (req, res) => {
 });
 
 // ================================================
+// SCHEDULED SCANNING
+// ================================================
+
+const startScheduledScanning = () => {
+    // Scan every 5 minutes
+    const SCAN_INTERVAL = 5 * 60 * 1000;
+    
+    setInterval(async () => {
+        console.log(`[Scheduled] Running automated scan...`);
+        try {
+            // Scan with default settings, alerts enabled
+            await scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME, {
+                minGrade: 'D',  // Scan all, but only alert A+/A
+                requireHTFConfluence: true
+            }, true);
+        } catch (error) {
+            console.error('[Scheduled] Scan error:', error);
+        }
+    }, SCAN_INTERVAL);
+    
+    console.log(`[Scheduled] Auto-scan enabled every ${SCAN_INTERVAL / 60000} minutes`);
+};
+
+// ================================================
 // START SERVER
 // ================================================
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log('========================================');
-    console.log('   LIQUIDITY SWEEP SCANNER v5          ');
-    console.log('   Signal Scoring + Manual News Bias   ');
+    console.log('   SWEEPSIGNAL v6                      ');
+    console.log('   Liquidity Sweep Scanner             ');
+    console.log('   With Telegram Alerts                ');
     console.log('========================================');
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📊 OANDA Environment: ${OANDA_CONFIG.environment}`);
     console.log(`🔍 Liquidity Scanner: Active`);
-    console.log(`📈 HTF Bias: Enabled`);
-    console.log(`⚠️  Session Warnings: Enabled`);
-    console.log(`🎯 Multiple TPs: Enabled`);
-    console.log(`⭐ Signal Scoring: Enabled`);
-    console.log(`📰 News Bias: Manual Toggle`);
+    console.log(`📱 Telegram Alerts: ${LIQUIDITY_CONFIG.ALERTS.ENABLED ? 'Enabled' : 'Disabled'}`);
+    console.log(`👥 Subscribers: ${telegramSubscribers.size}`);
     console.log(`⏰ Current Session: ${getCurrentSession()}`);
     console.log('========================================');
+    
+    // Start scheduled scanning
+    startScheduledScanning();
+    
+    // Send startup notification
+    setTimeout(() => {
+        sendStartupNotification();
+    }, 2000);
+    
+    // Run initial scan
+    setTimeout(() => {
+        console.log(`[Startup] Running initial scan...`);
+        scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME, {}, true).catch(err => console.error('Initial scan error:', err));
+    }, 5000);
 });
-
-setTimeout(() => {
-    console.log(`[Startup] Running initial scan...`);
-    scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME).catch(err => console.error('Initial scan error:', err));
-}, 5000);
