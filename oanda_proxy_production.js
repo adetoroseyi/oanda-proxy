@@ -14,15 +14,15 @@ const app = express();
 // ================================================
 
 const OANDA_CONFIG = {
-    accountId: process.env.OANDA_ACCOUNT_ID || '101-004-37956081-001',
-    apiToken: process.env.OANDA_API_TOKEN || '673519b725c06d9e71b1eff404a38d33-81178e52a2898b5c459044dfa5bac1bd',
+    accountId: process.env.OANDA_ACCOUNT_ID,
+    apiToken: process.env.OANDA_API_TOKEN,
     environment: process.env.OANDA_ENVIRONMENT || 'practice'
 };
 
 // Telegram Configuration
 const TELEGRAM_CONFIG = {
-    botToken: process.env.TELEGRAM_BOT_TOKEN || '8546917458:AAFHqypgClfhf0TrFVGrkcbpLP2BSaUA7F8',
-    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || '7278083298'
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID
 };
 
 const PORT = process.env.PORT || 3001;
