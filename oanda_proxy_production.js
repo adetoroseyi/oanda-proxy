@@ -303,7 +303,7 @@ const detectFVG = (candles, index) => {
 };
 
 // Detect liquidity sweep
-const detectSweep = (candles, level, type, atr) => {
+const detectSweep = (candles, level, type, atr, displacementMultiple = 1.5) => {
     // Look at last 5 candles for sweep pattern
     const recentCandles = candles.slice(-5);
     
@@ -328,7 +328,7 @@ const detectSweep = (candles, level, type, atr) => {
             
             // Check for displacement (strong move)
             const bodySize = Math.abs(currClose - currOpen);
-            const hasDisplacement = bodySize > (atr * LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE);
+            const hasDisplacement = bodySize > (atr * displacementMultiple);
             
             if (swept && closedAbove && bullishCandle) {
                 const fvg = detectFVG(candles, candles.length - 1);
@@ -350,7 +350,7 @@ const detectSweep = (candles, level, type, atr) => {
             const bearishCandle = currClose < currOpen;
             
             const bodySize = Math.abs(currClose - currOpen);
-            const hasDisplacement = bodySize > (atr * LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE);
+            const hasDisplacement = bodySize > (atr * displacementMultiple);
             
             if (swept && closedBelow && bearishCandle) {
                 const fvg = detectFVG(candles, candles.length - 1);
@@ -370,8 +370,17 @@ const detectSweep = (candles, level, type, atr) => {
 };
 
 // Analyze single instrument for liquidity setups
-const analyzeInstrument = async (instrument, timeframe = 'H1') => {
+const analyzeInstrument = async (instrument, timeframe = 'H1', config = {}) => {
     try {
+        // Use provided config or defaults
+        const minRR = config.minRR || LIQUIDITY_CONFIG.MIN_REWARD_RISK;
+        const maxSignals = config.maxSignals || LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT;
+        const equalTolerance = config.equalTolerance || LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE;
+        const displacementMultiple = config.displacementMultiple || LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE;
+        const requireDisplacement = config.requireDisplacement || false;
+        const requireFVG = config.requireFVG || false;
+        const maxEqualLevels = config.maxEqualLevels || LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS;
+        
         // Determine candle count based on timeframe
         const candleCount = {
             'M30': 100,
@@ -401,8 +410,8 @@ const analyzeInstrument = async (instrument, timeframe = 'H1') => {
         const nyLevels = getSessionLevels(analysisCandles, 'NY');
         const equalLevels = findEqualLevels(
             analysisCandles, 
-            LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE,
-            LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS
+            equalTolerance,
+            maxEqualLevels
         );
         
         // Collect all key levels (prioritize PDH/PDL and session levels)
@@ -441,14 +450,15 @@ const analyzeInstrument = async (instrument, timeframe = 'H1') => {
         
         for (const level of keyLevels) {
             // Limit signals per instrument
-            if (signals.length >= LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT) break;
+            if (signals.length >= maxSignals) break;
             
             const isHighLevel = level.type.includes('HIGH');
             const sweep = detectSweep(
                 analysisCandles, 
                 level.price, 
                 isHighLevel ? 'HIGH' : 'LOW',
-                atr
+                atr,
+                displacementMultiple
             );
             
             if (sweep) {
@@ -471,11 +481,11 @@ const analyzeInstrument = async (instrument, timeframe = 'H1') => {
                     rewardRisk = (sweep.entryPrice - takeProfit) / (stopLoss - sweep.entryPrice);
                 }
                 
-                // Apply stricter filtering
-                if (rewardRisk >= LIQUIDITY_CONFIG.MIN_REWARD_RISK) {
+                // Apply configurable filtering
+                if (rewardRisk >= minRR) {
                     // Optional: require displacement or FVG
-                    if (LIQUIDITY_CONFIG.REQUIRE_DISPLACEMENT && !sweep.hasDisplacement) continue;
-                    if (LIQUIDITY_CONFIG.REQUIRE_FVG && !sweep.fvg) continue;
+                    if (requireDisplacement && !sweep.hasDisplacement) continue;
+                    if (requireFVG && !sweep.fvg) continue;
                     
                     seenDirections.add(dirKey);
                     
@@ -527,8 +537,19 @@ const analyzeInstrument = async (instrument, timeframe = 'H1') => {
 };
 
 // Full market scan
-const scanAllInstruments = async (timeframe = 'H1') => {
+const scanAllInstruments = async (timeframe = 'H1', customConfig = {}) => {
     console.log(`[${new Date().toISOString()}] Starting ${timeframe} liquidity scan...`);
+    
+    // Merge custom config with defaults
+    const config = {
+        minRR: customConfig.minRR || LIQUIDITY_CONFIG.MIN_REWARD_RISK,
+        maxSignals: customConfig.maxSignals || LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT,
+        equalTolerance: customConfig.equalTolerance || LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE,
+        displacementMultiple: customConfig.displacementMultiple || LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE,
+        requireDisplacement: customConfig.requireDisplacement || false,
+        requireFVG: customConfig.requireFVG || false,
+        maxEqualLevels: customConfig.maxEqualLevels || LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS
+    };
     
     // Validate timeframe
     if (!LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.includes(timeframe)) {
@@ -542,7 +563,7 @@ const scanAllInstruments = async (timeframe = 'H1') => {
     const batchSize = 5;
     for (let i = 0; i < LIQUIDITY_CONFIG.INSTRUMENTS.length; i += batchSize) {
         const batch = LIQUIDITY_CONFIG.INSTRUMENTS.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(inst => analyzeInstrument(inst, timeframe)));
+        const batchResults = await Promise.all(batch.map(inst => analyzeInstrument(inst, timeframe, config)));
         
         batchResults.forEach(result => {
             results.push(result);
@@ -565,7 +586,8 @@ const scanAllInstruments = async (timeframe = 'H1') => {
         lastUpdate: new Date().toISOString(),
         timeframe,
         data: results,
-        signals: allSignals
+        signals: allSignals,
+        config
     };
     
     console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals.`);
@@ -576,7 +598,8 @@ const scanAllInstruments = async (timeframe = 'H1') => {
         instrumentsScanned: results.length,
         signalsFound: allSignals.length,
         instruments: results,
-        signals: allSignals
+        signals: allSignals,
+        appliedSettings: config
     };
 };
 
@@ -646,11 +669,22 @@ app.get('/api/news-health', (req, res) => {
 // NEW LIQUIDITY SWEEP ENDPOINTS
 // ================================================
 
-// Full market scan
+// Full market scan with configurable parameters
 app.get('/liquidity/scan', async (req, res) => {
     try {
         const forceRefresh = req.query.refresh === 'true';
         const timeframe = req.query.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
+        
+        // Parse configurable parameters from query string
+        const customConfig = {
+            minRR: parseFloat(req.query.minRR) || LIQUIDITY_CONFIG.MIN_REWARD_RISK,
+            maxSignals: parseInt(req.query.maxSignals) || LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT,
+            equalTolerance: parseFloat(req.query.equalTolerance) || LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE,
+            displacementMultiple: parseFloat(req.query.displacementMultiple) || LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE,
+            requireDisplacement: req.query.requireDisplacement === 'true',
+            requireFVG: req.query.requireFVG === 'true',
+            maxEqualLevels: parseInt(req.query.maxEqualLevels) || LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS
+        };
         
         // Validate timeframe
         if (!LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.includes(timeframe)) {
@@ -660,8 +694,11 @@ app.get('/liquidity/scan', async (req, res) => {
             });
         }
         
-        // Return cached if fresh (less than 1 minute old) and same timeframe
-        if (!forceRefresh && liquidityCache.lastUpdate && liquidityCache.timeframe === timeframe) {
+        // Build cache key based on params
+        const cacheKey = `${timeframe}-${customConfig.minRR}-${customConfig.requireDisplacement}-${customConfig.requireFVG}`;
+        
+        // Return cached if fresh (less than 1 minute old) and same params
+        if (!forceRefresh && liquidityCache.lastUpdate && liquidityCache.cacheKey === cacheKey) {
             const cacheAge = Date.now() - new Date(liquidityCache.lastUpdate).getTime();
             if (cacheAge < 60000) {
                 return res.json({
@@ -671,7 +708,9 @@ app.get('/liquidity/scan', async (req, res) => {
             }
         }
         
-        const results = await scanAllInstruments(timeframe);
+        const results = await scanAllInstruments(timeframe, customConfig);
+        results.cacheKey = cacheKey;
+        results.appliedSettings = customConfig;
         res.json(results);
         
     } catch (error) {
