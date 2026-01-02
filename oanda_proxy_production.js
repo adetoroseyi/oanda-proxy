@@ -37,22 +37,30 @@ const LIQUIDITY_CONFIG = {
         'NAS100_USD', 'XAU_USD'
     ],
     
+    // Available timeframes for analysis
+    AVAILABLE_TIMEFRAMES: ['M30', 'H1', 'H4', 'D'],
+    DEFAULT_TIMEFRAME: 'H1',
+    
     // Detection thresholds
-    EQUAL_LEVEL_TOLERANCE: 0.0005,      // 0.05% for equal highs/lows
+    EQUAL_LEVEL_TOLERANCE: 0.0003,      // 0.03% for equal highs/lows (tighter)
     DISPLACEMENT_ATR_MULTIPLE: 1.5,     // Candle body > 1.5x ATR = displacement
-    MIN_REWARD_RISK: 2.0,               // Minimum R:R to report
+    MIN_REWARD_RISK: 2.5,               // Minimum R:R to report (increased)
+    MAX_EQUAL_LEVELS: 3,                // Max equal highs/lows to track per side
     
     // Timeframes
-    PRIMARY_TIMEFRAME: 'M15',           // Main signal detection
-    HIGHER_TIMEFRAME: 'H1',             // Context/bias
     DAILY_TIMEFRAME: 'D',               // PDH/PDL calculation
     
-    // Session times (hours in ET, converted to UTC+0)
+    // Session times (hours in UTC)
     SESSIONS: {
-        ASIAN:  { start: 1, end: 5 },    // 8pm-12am ET = 1:00-5:00 UTC
-        LONDON: { start: 7, end: 10 },   // 2am-5am ET = 7:00-10:00 UTC  
-        NY:     { start: 13, end: 17 }   // 8am-12pm ET = 13:00-17:00 UTC
-    }
+        ASIAN:  { start: 0, end: 8 },    // 00:00-08:00 UTC (Asian session)
+        LONDON: { start: 7, end: 16 },   // 07:00-16:00 UTC (London session)
+        NY:     { start: 13, end: 22 }   // 13:00-22:00 UTC (NY session)
+    },
+    
+    // Signal filtering
+    REQUIRE_DISPLACEMENT: false,        // If true, only show signals with displacement
+    REQUIRE_FVG: false,                 // If true, only show signals with FVG
+    MAX_SIGNALS_PER_INSTRUMENT: 2       // Limit signals per instrument
 };
 
 // Cache for analysis results
@@ -180,8 +188,8 @@ const getSessionLevels = (candles, sessionType) => {
     return { high, low, session: sessionType };
 };
 
-// Find equal highs/lows
-const findEqualLevels = (candles, tolerance) => {
+// Find equal highs/lows (limited to prevent noise)
+const findEqualLevels = (candles, tolerance, maxLevels = 3) => {
     const swingHighs = [];
     const swingLows = [];
     
@@ -213,32 +221,44 @@ const findEqualLevels = (candles, tolerance) => {
         }
     }
     
-    // Find equal levels (within tolerance)
+    // Find equal levels (within tolerance) - only recent ones
     const equalHighs = [];
     const equalLows = [];
     
-    for (let i = 0; i < swingHighs.length; i++) {
-        for (let j = i + 1; j < swingHighs.length; j++) {
-            const diff = Math.abs(swingHighs[i].price - swingHighs[j].price);
-            const avg = (swingHighs[i].price + swingHighs[j].price) / 2;
+    // Only check recent swing points (last 10)
+    const recentHighs = swingHighs.slice(-10);
+    const recentLows = swingLows.slice(-10);
+    
+    for (let i = 0; i < recentHighs.length && equalHighs.length < maxLevels; i++) {
+        for (let j = i + 1; j < recentHighs.length && equalHighs.length < maxLevels; j++) {
+            const diff = Math.abs(recentHighs[i].price - recentHighs[j].price);
+            const avg = (recentHighs[i].price + recentHighs[j].price) / 2;
             if (diff / avg < tolerance) {
-                equalHighs.push({
-                    level: avg,
-                    touches: [swingHighs[i], swingHighs[j]]
-                });
+                // Check if we already have a similar level
+                const exists = equalHighs.some(eh => Math.abs(eh.level - avg) / avg < tolerance);
+                if (!exists) {
+                    equalHighs.push({
+                        level: avg,
+                        touches: [recentHighs[i], recentHighs[j]]
+                    });
+                }
             }
         }
     }
     
-    for (let i = 0; i < swingLows.length; i++) {
-        for (let j = i + 1; j < swingLows.length; j++) {
-            const diff = Math.abs(swingLows[i].price - swingLows[j].price);
-            const avg = (swingLows[i].price + swingLows[j].price) / 2;
+    for (let i = 0; i < recentLows.length && equalLows.length < maxLevels; i++) {
+        for (let j = i + 1; j < recentLows.length && equalLows.length < maxLevels; j++) {
+            const diff = Math.abs(recentLows[i].price - recentLows[j].price);
+            const avg = (recentLows[i].price + recentLows[j].price) / 2;
             if (diff / avg < tolerance) {
-                equalLows.push({
-                    level: avg,
-                    touches: [swingLows[i], swingLows[j]]
-                });
+                // Check if we already have a similar level
+                const exists = equalLows.some(el => Math.abs(el.level - avg) / avg < tolerance);
+                if (!exists) {
+                    equalLows.push({
+                        level: avg,
+                        touches: [recentLows[i], recentLows[j]]
+                    });
+                }
             }
         }
     }
@@ -350,69 +370,92 @@ const detectSweep = (candles, level, type, atr) => {
 };
 
 // Analyze single instrument for liquidity setups
-const analyzeInstrument = async (instrument) => {
+const analyzeInstrument = async (instrument, timeframe = 'H1') => {
     try {
+        // Determine candle count based on timeframe
+        const candleCount = {
+            'M30': 100,
+            'H1': 72,   // 3 days of hourly
+            'H4': 42,   // ~1 week of 4H
+            'D': 30     // 1 month of daily
+        }[timeframe] || 72;
+        
         // Fetch candles for multiple timeframes
-        const [dailyCandles, h1Candles, m15Candles] = await Promise.all([
+        const [dailyCandles, analysisCandles] = await Promise.all([
             fetchCandles(instrument, 'D', 10),
-            fetchCandles(instrument, 'H1', 50),
-            fetchCandles(instrument, 'M15', 100)
+            fetchCandles(instrument, timeframe, candleCount)
         ]);
         
-        if (!dailyCandles || !h1Candles || !m15Candles) {
+        if (!dailyCandles || !analysisCandles) {
             return { instrument, error: 'Failed to fetch candles' };
         }
         
         const pipSize = getPipSize(instrument);
-        const atr = calculateATR(m15Candles, 14);
-        const currentPrice = parseFloat(m15Candles[m15Candles.length - 1].mid.c);
+        const atr = calculateATR(analysisCandles, 14);
+        const currentPrice = parseFloat(analysisCandles[analysisCandles.length - 1].mid.c);
         
         // Get key levels
         const pdh_pdl = getPDHPDL(dailyCandles);
-        const asianLevels = getSessionLevels(h1Candles, 'ASIAN');
-        const londonLevels = getSessionLevels(h1Candles, 'LONDON');
-        const nyLevels = getSessionLevels(h1Candles, 'NY');
-        const equalLevels = findEqualLevels(m15Candles, LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE);
+        const asianLevels = getSessionLevels(analysisCandles, 'ASIAN');
+        const londonLevels = getSessionLevels(analysisCandles, 'LONDON');
+        const nyLevels = getSessionLevels(analysisCandles, 'NY');
+        const equalLevels = findEqualLevels(
+            analysisCandles, 
+            LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE,
+            LIQUIDITY_CONFIG.MAX_EQUAL_LEVELS
+        );
         
-        // Collect all key levels
+        // Collect all key levels (prioritize PDH/PDL and session levels)
         const keyLevels = [];
         
         if (pdh_pdl) {
-            keyLevels.push({ type: 'PDH', price: pdh_pdl.pdh, source: 'Previous Day High' });
-            keyLevels.push({ type: 'PDL', price: pdh_pdl.pdl, source: 'Previous Day Low' });
+            keyLevels.push({ type: 'PDH', price: pdh_pdl.pdh, source: 'Previous Day High', priority: 1 });
+            keyLevels.push({ type: 'PDL', price: pdh_pdl.pdl, source: 'Previous Day Low', priority: 1 });
         }
         
         if (asianLevels) {
-            keyLevels.push({ type: 'ASIAN_HIGH', price: asianLevels.high, source: 'Asian Session High' });
-            keyLevels.push({ type: 'ASIAN_LOW', price: asianLevels.low, source: 'Asian Session Low' });
+            keyLevels.push({ type: 'ASIAN_HIGH', price: asianLevels.high, source: 'Asian Session High', priority: 2 });
+            keyLevels.push({ type: 'ASIAN_LOW', price: asianLevels.low, source: 'Asian Session Low', priority: 2 });
         }
         
         if (londonLevels) {
-            keyLevels.push({ type: 'LONDON_HIGH', price: londonLevels.high, source: 'London Session High' });
-            keyLevels.push({ type: 'LONDON_LOW', price: londonLevels.low, source: 'London Session Low' });
+            keyLevels.push({ type: 'LONDON_HIGH', price: londonLevels.high, source: 'London Session High', priority: 2 });
+            keyLevels.push({ type: 'LONDON_LOW', price: londonLevels.low, source: 'London Session Low', priority: 2 });
         }
         
-        equalLevels.equalHighs.forEach((eq, idx) => {
-            keyLevels.push({ type: 'EQUAL_HIGH', price: eq.level, source: `Equal Highs ${idx + 1}` });
+        // Only add top equal levels
+        equalLevels.equalHighs.slice(0, 2).forEach((eq, idx) => {
+            keyLevels.push({ type: 'EQUAL_HIGH', price: eq.level, source: `Equal Highs ${idx + 1}`, priority: 3 });
         });
         
-        equalLevels.equalLows.forEach((eq, idx) => {
-            keyLevels.push({ type: 'EQUAL_LOW', price: eq.level, source: `Equal Lows ${idx + 1}` });
+        equalLevels.equalLows.slice(0, 2).forEach((eq, idx) => {
+            keyLevels.push({ type: 'EQUAL_LOW', price: eq.level, source: `Equal Lows ${idx + 1}`, priority: 3 });
         });
         
-        // Check for sweeps at each level
+        // Check for sweeps at each level (prioritized)
         const signals = [];
+        const seenDirections = new Set(); // Prevent duplicate signals same direction
+        
+        // Sort by priority
+        keyLevels.sort((a, b) => a.priority - b.priority);
         
         for (const level of keyLevels) {
+            // Limit signals per instrument
+            if (signals.length >= LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT) break;
+            
             const isHighLevel = level.type.includes('HIGH');
             const sweep = detectSweep(
-                m15Candles, 
+                analysisCandles, 
                 level.price, 
                 isHighLevel ? 'HIGH' : 'LOW',
                 atr
             );
             
             if (sweep) {
+                // Skip if we already have a signal in this direction
+                const dirKey = `${sweep.direction}-${level.type.includes('PDH') || level.type.includes('PDL') ? 'PD' : 'OTHER'}`;
+                if (seenDirections.has(dirKey)) continue;
+                
                 // Calculate SL and TP
                 let stopLoss, takeProfit, rewardRisk;
                 
@@ -428,7 +471,14 @@ const analyzeInstrument = async (instrument) => {
                     rewardRisk = (sweep.entryPrice - takeProfit) / (stopLoss - sweep.entryPrice);
                 }
                 
+                // Apply stricter filtering
                 if (rewardRisk >= LIQUIDITY_CONFIG.MIN_REWARD_RISK) {
+                    // Optional: require displacement or FVG
+                    if (LIQUIDITY_CONFIG.REQUIRE_DISPLACEMENT && !sweep.hasDisplacement) continue;
+                    if (LIQUIDITY_CONFIG.REQUIRE_FVG && !sweep.fvg) continue;
+                    
+                    seenDirections.add(dirKey);
+                    
                     signals.push({
                         instrument,
                         direction: sweep.direction,
@@ -442,18 +492,22 @@ const analyzeInstrument = async (instrument) => {
                         hasFVG: sweep.fvg !== null,
                         fvgDetails: sweep.fvg,
                         timestamp: new Date().toISOString(),
-                        timeframe: 'M15'
+                        timeframe: timeframe,
+                        priority: level.priority
                     });
                 }
             }
         }
+        
+        // Sort signals by priority then R:R
+        signals.sort((a, b) => a.priority - b.priority || b.rewardRisk - a.rewardRisk);
         
         return {
             instrument,
             currentPrice,
             atr,
             pipSize,
-            keyLevels,
+            keyLevels: keyLevels.length,
             signals,
             pdh: pdh_pdl?.pdh,
             pdl: pdh_pdl?.pdl,
@@ -463,6 +517,7 @@ const analyzeInstrument = async (instrument) => {
             londonLow: londonLevels?.low,
             equalHighs: equalLevels.equalHighs.length,
             equalLows: equalLevels.equalLows.length,
+            timeframe,
             lastUpdate: new Date().toISOString()
         };
         
@@ -472,8 +527,13 @@ const analyzeInstrument = async (instrument) => {
 };
 
 // Full market scan
-const scanAllInstruments = async () => {
-    console.log(`[${new Date().toISOString()}] Starting full liquidity scan...`);
+const scanAllInstruments = async (timeframe = 'H1') => {
+    console.log(`[${new Date().toISOString()}] Starting ${timeframe} liquidity scan...`);
+    
+    // Validate timeframe
+    if (!LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.includes(timeframe)) {
+        timeframe = LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
+    }
     
     const results = [];
     const allSignals = [];
@@ -482,7 +542,7 @@ const scanAllInstruments = async () => {
     const batchSize = 5;
     for (let i = 0; i < LIQUIDITY_CONFIG.INSTRUMENTS.length; i += batchSize) {
         const batch = LIQUIDITY_CONFIG.INSTRUMENTS.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(analyzeInstrument));
+        const batchResults = await Promise.all(batch.map(inst => analyzeInstrument(inst, timeframe)));
         
         batchResults.forEach(result => {
             results.push(result);
@@ -497,20 +557,22 @@ const scanAllInstruments = async () => {
         }
     }
     
-    // Sort signals by R:R descending
-    allSignals.sort((a, b) => b.rewardRisk - a.rewardRisk);
+    // Sort signals by priority then R:R descending
+    allSignals.sort((a, b) => (a.priority || 99) - (b.priority || 99) || b.rewardRisk - a.rewardRisk);
     
     // Update cache
     liquidityCache = {
         lastUpdate: new Date().toISOString(),
+        timeframe,
         data: results,
         signals: allSignals
     };
     
-    console.log(`[${new Date().toISOString()}] Scan complete. Found ${allSignals.length} signals.`);
+    console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals.`);
     
     return {
         timestamp: liquidityCache.lastUpdate,
+        timeframe,
         instrumentsScanned: results.length,
         signalsFound: allSignals.length,
         instruments: results,
@@ -588,9 +650,18 @@ app.get('/api/news-health', (req, res) => {
 app.get('/liquidity/scan', async (req, res) => {
     try {
         const forceRefresh = req.query.refresh === 'true';
+        const timeframe = req.query.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
         
-        // Return cached if fresh (less than 1 minute old)
-        if (!forceRefresh && liquidityCache.lastUpdate) {
+        // Validate timeframe
+        if (!LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.includes(timeframe)) {
+            return res.status(400).json({ 
+                error: 'Invalid timeframe',
+                available: LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES 
+            });
+        }
+        
+        // Return cached if fresh (less than 1 minute old) and same timeframe
+        if (!forceRefresh && liquidityCache.lastUpdate && liquidityCache.timeframe === timeframe) {
             const cacheAge = Date.now() - new Date(liquidityCache.lastUpdate).getTime();
             if (cacheAge < 60000) {
                 return res.json({
@@ -600,7 +671,7 @@ app.get('/liquidity/scan', async (req, res) => {
             }
         }
         
-        const results = await scanAllInstruments();
+        const results = await scanAllInstruments(timeframe);
         res.json(results);
         
     } catch (error) {
@@ -612,9 +683,11 @@ app.get('/liquidity/scan', async (req, res) => {
 // Get active signals only
 app.get('/liquidity/signals', async (req, res) => {
     try {
-        // If cache is stale, refresh
-        if (!liquidityCache.lastUpdate) {
-            await scanAllInstruments();
+        const timeframe = req.query.timeframe || liquidityCache.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
+        
+        // If cache is stale or different timeframe, refresh
+        if (!liquidityCache.lastUpdate || liquidityCache.timeframe !== timeframe) {
+            await scanAllInstruments(timeframe);
         }
         
         const cacheAge = Date.now() - new Date(liquidityCache.lastUpdate).getTime();
@@ -622,6 +695,7 @@ app.get('/liquidity/signals', async (req, res) => {
         
         res.json({
             timestamp: liquidityCache.lastUpdate,
+            timeframe: liquidityCache.timeframe,
             isStale,
             currentSession: getCurrentSession(),
             signalCount: liquidityCache.signals.length,
@@ -637,6 +711,7 @@ app.get('/liquidity/signals', async (req, res) => {
 app.get('/liquidity/levels/:instrument', async (req, res) => {
     try {
         const instrument = req.params.instrument.toUpperCase();
+        const timeframe = req.query.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
         
         if (!LIQUIDITY_CONFIG.INSTRUMENTS.includes(instrument)) {
             return res.status(400).json({ 
@@ -645,7 +720,7 @@ app.get('/liquidity/levels/:instrument', async (req, res) => {
             });
         }
         
-        const result = await analyzeInstrument(instrument);
+        const result = await analyzeInstrument(instrument, timeframe);
         res.json(result);
         
     } catch (error) {
@@ -657,15 +732,13 @@ app.get('/liquidity/levels/:instrument', async (req, res) => {
 app.get('/liquidity/config', (req, res) => {
     res.json({
         instruments: LIQUIDITY_CONFIG.INSTRUMENTS,
+        availableTimeframes: LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES,
+        defaultTimeframe: LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME,
         thresholds: {
             equalLevelTolerance: LIQUIDITY_CONFIG.EQUAL_LEVEL_TOLERANCE,
             displacementATRMultiple: LIQUIDITY_CONFIG.DISPLACEMENT_ATR_MULTIPLE,
-            minRewardRisk: LIQUIDITY_CONFIG.MIN_REWARD_RISK
-        },
-        timeframes: {
-            primary: LIQUIDITY_CONFIG.PRIMARY_TIMEFRAME,
-            higher: LIQUIDITY_CONFIG.HIGHER_TIMEFRAME,
-            daily: LIQUIDITY_CONFIG.DAILY_TIMEFRAME
+            minRewardRisk: LIQUIDITY_CONFIG.MIN_REWARD_RISK,
+            maxSignalsPerInstrument: LIQUIDITY_CONFIG.MAX_SIGNALS_PER_INSTRUMENT
         },
         sessions: LIQUIDITY_CONFIG.SESSIONS,
         currentSession: getCurrentSession()
@@ -675,7 +748,8 @@ app.get('/liquidity/config', (req, res) => {
 // Force refresh scan
 app.post('/liquidity/refresh', async (req, res) => {
     try {
-        const results = await scanAllInstruments();
+        const timeframe = req.query.timeframe || req.body.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
+        const results = await scanAllInstruments(timeframe);
         res.json({
             message: 'Scan refreshed',
             ...results
@@ -743,6 +817,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`📰 News API: ${FMP_API_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`🔍 Liquidity Scanner: Active`);
     console.log(`📈 Instruments: ${LIQUIDITY_CONFIG.INSTRUMENTS.length}`);
+    console.log(`⏱️  Timeframes: ${LIQUIDITY_CONFIG.AVAILABLE_TIMEFRAMES.join(', ')}`);
     console.log(`⏰ Current Session: ${getCurrentSession()}`);
     console.log('========================================');
     console.log('Endpoints:');
@@ -751,8 +826,8 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('  - GET  /api/news-events');
     console.log('  - ALL  /api/* (OANDA proxy)');
     console.log('  NEW (Liquidity):');
-    console.log('  - GET  /liquidity/scan');
-    console.log('  - GET  /liquidity/signals');
+    console.log('  - GET  /liquidity/scan?timeframe=H1');
+    console.log('  - GET  /liquidity/signals?timeframe=H1');
     console.log('  - GET  /liquidity/levels/:instrument');
     console.log('  - GET  /liquidity/config');
     console.log('  - POST /liquidity/refresh');
@@ -761,6 +836,6 @@ app.listen(PORT, '0.0.0.0', () => {
 
 // Initial scan on startup (after 5 second delay)
 setTimeout(() => {
-    console.log('[Startup] Running initial liquidity scan...');
-    scanAllInstruments().catch(err => console.error('Initial scan error:', err));
+    console.log(`[Startup] Running initial ${LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME} liquidity scan...`);
+    scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME).catch(err => console.error('Initial scan error:', err));
 }, 5000);
