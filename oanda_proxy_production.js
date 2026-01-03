@@ -1674,6 +1674,61 @@ app.get('/subscription-status/:userId', async (req, res) => {
     }
 });
 
+// Create Stripe Customer Portal Session
+app.post('/create-portal-session', async (req, res) => {
+    try {
+        const { userId, returnUrl } = req.body;
+        
+        if (!userId) {
+            return res.status(400).json({ error: 'Missing userId' });
+        }
+        
+        // Get user's Stripe customer ID from Supabase
+        const { data: profile, error: profileError } = await supabase
+            .from('profiles')
+            .select('stripe_customer_id, email')
+            .eq('id', userId)
+            .single();
+        
+        if (profileError || !profile) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        if (!profile.stripe_customer_id) {
+            return res.status(400).json({ error: 'No active subscription found' });
+        }
+        
+        // Create portal session with Stripe API
+        const params = new URLSearchParams({
+            'customer': profile.stripe_customer_id,
+            'return_url': returnUrl || 'https://vnmrsignal.app/sweepsignal/dashboard.html'
+        });
+        
+        const response = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params.toString()
+        });
+        
+        const session = await response.json();
+        
+        if (session.error) {
+            console.error('Portal session error:', session.error);
+            return res.status(400).json({ error: session.error.message });
+        }
+        
+        console.log(`[Stripe] Portal session created for ${profile.email}`);
+        res.json({ url: session.url });
+        
+    } catch (error) {
+        console.error('Portal session error:', error);
+        res.status(500).json({ error: 'Failed to create portal session' });
+    }
+});
+
 // OANDA Proxy
 app.all('/api/*', (req, res) => {
     const oandaPath = req.path.replace('/api', '');
