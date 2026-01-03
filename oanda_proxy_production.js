@@ -1729,6 +1729,65 @@ app.post('/create-portal-session', async (req, res) => {
     }
 });
 
+// Admin Analytics Endpoint (Super Admin Only)
+app.post('/admin/analytics', async (req, res) => {
+    try {
+        const { adminEmail } = req.body;
+        
+        // Verify super admin
+        if (adminEmail !== 'toventuresltd@gmail.com') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        // Fetch all profiles using service key (bypasses RLS)
+        const { data: profiles, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .order('created_at', { ascending: false });
+        
+        if (error) {
+            console.error('Analytics fetch error:', error);
+            return res.status(500).json({ error: 'Failed to fetch analytics' });
+        }
+        
+        // Calculate stats
+        const totalUsers = profiles.length;
+        const trialUsers = profiles.filter(p => p.subscription_status === 'trialing').length;
+        const basicUsers = profiles.filter(p => p.subscription_tier === 'basic' && p.subscription_status === 'active').length;
+        const proUsers = profiles.filter(p => p.subscription_tier === 'pro' && p.subscription_status === 'active').length;
+        const canceledUsers = profiles.filter(p => p.subscription_status === 'canceled').length;
+        const telegramUsers = profiles.filter(p => p.telegram_chat_id).length;
+        
+        // Calculate revenue
+        const monthlyRevenue = (basicUsers * 37) + (proUsers * 67);
+        
+        // Recent signups (last 7 days)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const recentSignups = profiles.filter(p => new Date(p.created_at) >= sevenDaysAgo);
+        
+        console.log(`[Admin] Analytics fetched: ${totalUsers} total users, $${monthlyRevenue} MRR`);
+        
+        res.json({
+            stats: {
+                totalUsers,
+                trialUsers,
+                basicUsers,
+                proUsers,
+                canceledUsers,
+                telegramUsers,
+                monthlyRevenue
+            },
+            users: profiles,
+            recentSignups
+        });
+        
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
+    }
+});
+
 // OANDA Proxy
 app.all('/api/*', (req, res) => {
     const oandaPath = req.path.replace('/api', '');
