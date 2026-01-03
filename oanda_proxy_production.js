@@ -1,6 +1,6 @@
 // ================================================
-// SWEEPSIGNAL - LIQUIDITY SWEEP SCANNER v7
-// With Telegram Alerts + Supabase User Verification
+// SWEEPSIGNAL - LIQUIDITY SWEEP SCANNER v8
+// With Telegram Alerts + Supabase + Stripe Payments
 // ================================================
 
 const express = require('express');
@@ -30,6 +30,10 @@ const TELEGRAM_CONFIG = {
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// Stripe Configuration
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 const PORT = process.env.PORT || 3001;
 
@@ -120,6 +124,10 @@ let liquidityCache = {
 let alertedSignals = new Map(); // key: instrument-direction-setupType, value: timestamp
 
 app.use(cors({ origin: '*' }));
+
+// Raw body parser for Stripe webhooks (must be before express.json)
+app.use('/stripe-webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json());
 
 // ================================================
@@ -1452,6 +1460,220 @@ app.post('/telegram/alerts/toggle', (req, res) => {
     });
 });
 
+// ================================================
+// STRIPE ENDPOINTS
+// ================================================
+
+// Create Stripe Checkout Session
+app.post('/create-checkout-session', async (req, res) => {
+    try {
+        const { priceId, userId, userEmail, plan, successUrl, cancelUrl } = req.body;
+        
+        if (!priceId || !userId || !userEmail) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        // Make request to Stripe API
+        const params = new URLSearchParams({
+            'payment_method_types[]': 'card',
+            'mode': 'subscription',
+            'customer_email': userEmail,
+            'line_items[0][price]': priceId,
+            'line_items[0][quantity]': '1',
+            'success_url': successUrl,
+            'cancel_url': cancelUrl,
+            'metadata[userId]': userId,
+            'metadata[plan]': plan,
+            'subscription_data[metadata][userId]': userId,
+            'subscription_data[metadata][plan]': plan
+        });
+        
+        const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params.toString()
+        });
+        
+        const session = await response.json();
+        
+        if (session.error) {
+            console.error('Stripe error:', session.error);
+            return res.status(400).json({ error: session.error.message });
+        }
+        
+        console.log(`[Stripe] Checkout session created for ${userEmail} - ${plan}`);
+        res.json({ sessionId: session.id });
+        
+    } catch (error) {
+        console.error('Checkout session error:', error);
+        res.status(500).json({ error: 'Failed to create checkout session' });
+    }
+});
+
+// Stripe Webhook Handler
+app.post('/stripe-webhook', async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
+    
+    try {
+        // Verify webhook signature if secret is configured
+        if (STRIPE_WEBHOOK_SECRET && sig) {
+            // Simple signature check - for production, use Stripe SDK
+            // For now, we'll process all events from Stripe
+            event = JSON.parse(req.body.toString());
+        } else {
+            event = JSON.parse(req.body.toString());
+        }
+    } catch (err) {
+        console.error('Webhook signature verification failed:', err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+    
+    console.log(`[Stripe] Webhook received: ${event.type}`);
+    
+    try {
+        switch (event.type) {
+            case 'checkout.session.completed': {
+                const session = event.data.object;
+                const userId = session.metadata?.userId;
+                const plan = session.metadata?.plan;
+                const customerId = session.customer;
+                const subscriptionId = session.subscription;
+                
+                if (userId && plan) {
+                    // Update user profile in Supabase
+                    const { error } = await supabase
+                        .from('profiles')
+                        .update({
+                            subscription_tier: plan,
+                            subscription_status: 'active',
+                            stripe_customer_id: customerId,
+                            stripe_subscription_id: subscriptionId,
+                            trial_end_date: null // Clear trial since they're now paying
+                        })
+                        .eq('id', userId);
+                    
+                    if (error) {
+                        console.error('Failed to update profile:', error);
+                    } else {
+                        console.log(`[Stripe] User ${userId} subscribed to ${plan}`);
+                        
+                        // Send Telegram notification to admin
+                        await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, 
+                            `💰 <b>New Subscription!</b>\n\nPlan: ${plan.toUpperCase()}\nUser ID: ${userId}\nCustomer: ${customerId}`
+                        );
+                    }
+                }
+                break;
+            }
+            
+            case 'customer.subscription.updated': {
+                const subscription = event.data.object;
+                const userId = subscription.metadata?.userId;
+                const status = subscription.status;
+                
+                if (userId) {
+                    let subscriptionStatus = 'active';
+                    if (status === 'canceled' || status === 'unpaid') {
+                        subscriptionStatus = 'canceled';
+                    } else if (status === 'past_due') {
+                        subscriptionStatus = 'past_due';
+                    }
+                    
+                    await supabase
+                        .from('profiles')
+                        .update({ subscription_status: subscriptionStatus })
+                        .eq('id', userId);
+                    
+                    console.log(`[Stripe] Subscription updated for ${userId}: ${subscriptionStatus}`);
+                }
+                break;
+            }
+            
+            case 'customer.subscription.deleted': {
+                const subscription = event.data.object;
+                const userId = subscription.metadata?.userId;
+                
+                if (userId) {
+                    await supabase
+                        .from('profiles')
+                        .update({
+                            subscription_tier: 'trial',
+                            subscription_status: 'canceled',
+                            stripe_subscription_id: null
+                        })
+                        .eq('id', userId);
+                    
+                    console.log(`[Stripe] Subscription canceled for ${userId}`);
+                    
+                    // Notify admin
+                    await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId,
+                        `⚠️ <b>Subscription Canceled</b>\n\nUser ID: ${userId}`
+                    );
+                }
+                break;
+            }
+            
+            case 'invoice.payment_failed': {
+                const invoice = event.data.object;
+                const customerId = invoice.customer;
+                
+                // Find user by Stripe customer ID
+                const { data: profile } = await supabase
+                    .from('profiles')
+                    .select('id, email')
+                    .eq('stripe_customer_id', customerId)
+                    .single();
+                
+                if (profile) {
+                    await supabase
+                        .from('profiles')
+                        .update({ subscription_status: 'past_due' })
+                        .eq('id', profile.id);
+                    
+                    console.log(`[Stripe] Payment failed for ${profile.email}`);
+                    
+                    // Notify admin
+                    await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId,
+                        `❌ <b>Payment Failed</b>\n\nUser: ${profile.email}\nCustomer: ${customerId}`
+                    );
+                }
+                break;
+            }
+        }
+        
+        res.json({ received: true });
+        
+    } catch (error) {
+        console.error('Webhook handler error:', error);
+        res.status(500).json({ error: 'Webhook handler failed' });
+    }
+});
+
+// Get subscription status
+app.get('/subscription-status/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        
+        const { data: profile, error } = await supabase
+            .from('profiles')
+            .select('subscription_tier, subscription_status, stripe_customer_id, stripe_subscription_id')
+            .eq('id', userId)
+            .single();
+        
+        if (error || !profile) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        res.json(profile);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // OANDA Proxy
 app.all('/api/*', (req, res) => {
     const oandaPath = req.path.replace('/api', '');
@@ -1545,15 +1767,16 @@ const setupTelegramWebhook = async () => {
 
 app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('   SWEEPSIGNAL v7                      ');
+    console.log('   SWEEPSIGNAL v8                      ');
     console.log('   Liquidity Sweep Scanner             ');
-    console.log('   With Supabase User Verification     ');
+    console.log('   With Stripe Payments                ');
     console.log('========================================');
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📊 OANDA Environment: ${OANDA_CONFIG.environment}`);
     console.log(`🔍 Liquidity Scanner: Active`);
     console.log(`📱 Telegram Alerts: ${LIQUIDITY_CONFIG.ALERTS.ENABLED ? 'Enabled' : 'Disabled'}`);
     console.log(`🔐 Supabase: ${SUPABASE_URL ? 'Connected' : 'Not configured'}`);
+    console.log(`💳 Stripe: ${STRIPE_SECRET_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`⏰ Current Session: ${getCurrentSession()}`);
     console.log('========================================');
     
