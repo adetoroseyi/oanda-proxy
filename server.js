@@ -363,7 +363,7 @@ app.listen(PORT, async () => {
     // Set up webhook
     if (BOT_TOKEN) {
         try {
-            const webhookUrl = `${process.env.RENDER_EXTERNAL_URL || 'https://your-app.onrender.com'}/webhook`;
+            const webhookUrl = `${process.env.RENDER_EXTERNAL_URL || 'https://oanda-proxy.onrender.com'}/webhook`;;
             const response = await fetch(`${TELEGRAM_API}/setWebhook?url=${webhookUrl}`);
             const result = await response.json();
             console.log('Webhook setup:', result);
@@ -381,3 +381,4 @@ app.listen(PORT, async () => {
     // Initial scan after 30 seconds
     setTimeout(scanAndAlert, 30000);
 });
+
