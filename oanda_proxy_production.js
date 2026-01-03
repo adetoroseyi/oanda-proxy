@@ -1,11 +1,12 @@
 // ================================================
-// SWEEPSIGNAL - LIQUIDITY SWEEP SCANNER v6
-// With Telegram Alerts
+// SWEEPSIGNAL - LIQUIDITY SWEEP SCANNER v7
+// With Telegram Alerts + Supabase User Verification
 // ================================================
 
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
@@ -24,6 +25,11 @@ const TELEGRAM_CONFIG = {
     botToken: process.env.TELEGRAM_BOT_TOKEN,
     adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID
 };
+
+// Supabase Configuration
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const PORT = process.env.PORT || 3001;
 
@@ -113,16 +119,6 @@ let liquidityCache = {
 // Alert tracking to prevent duplicates
 let alertedSignals = new Map(); // key: instrument-direction-setupType, value: timestamp
 
-// Telegram subscriber list (for future multi-user support)
-let telegramSubscribers = new Map();
-// Add admin by default
-telegramSubscribers.set(TELEGRAM_CONFIG.adminChatId, {
-    chatId: TELEGRAM_CONFIG.adminChatId,
-    minGrade: 'B',
-    alertsEnabled: true,
-    subscribedAt: new Date().toISOString()
-});
-
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
@@ -174,6 +170,197 @@ const sendTelegramMessage = async (chatId, message, parseMode = 'HTML') => {
     });
 };
 
+// ================================================
+// SUPABASE USER VERIFICATION
+// ================================================
+
+async function verifyTelegramCode(code, chatId) {
+    try {
+        // Find the verification code with user profile
+        const { data: verification, error: findError } = await supabase
+            .from('telegram_verifications')
+            .select('*, profiles(*)')
+            .eq('code', code)
+            .eq('used', false)
+            .gt('expires_at', new Date().toISOString())
+            .single();
+        
+        if (findError || !verification) {
+            return { success: false, message: '❌ Invalid or expired code.\n\nPlease generate a new one from the dashboard.' };
+        }
+        
+        // Check if user is Pro
+        if (verification.profiles.subscription_tier !== 'pro' || 
+            verification.profiles.subscription_status !== 'active') {
+            return { success: false, message: '❌ Telegram alerts are only available for Pro subscribers.\n\nUpgrade at vnmrsignal.app/sweepsignal' };
+        }
+        
+        // Mark code as used
+        await supabase
+            .from('telegram_verifications')
+            .update({ used: true })
+            .eq('id', verification.id);
+        
+        // Update user profile with telegram_chat_id
+        const { error: updateError } = await supabase
+            .from('profiles')
+            .update({ telegram_chat_id: chatId.toString() })
+            .eq('id', verification.user_id);
+        
+        if (updateError) {
+            console.error('Error updating profile:', updateError);
+            return { success: false, message: '❌ Error connecting your account. Please try again.' };
+        }
+        
+        return { 
+            success: true, 
+            message: `✅ <b>Successfully connected!</b>\n\nYou'll now receive real-time alerts for A+ and A grade signals.\n\nWelcome, ${verification.profiles.full_name || verification.profiles.email}!`
+        };
+        
+    } catch (error) {
+        console.error('Verification error:', error);
+        return { success: false, message: '❌ An error occurred. Please try again.' };
+    }
+}
+
+async function getProUsersWithTelegram() {
+    try {
+        const { data: users, error } = await supabase
+            .from('profiles')
+            .select('telegram_chat_id, email, full_name')
+            .eq('subscription_tier', 'pro')
+            .eq('subscription_status', 'active')
+            .not('telegram_chat_id', 'is', null);
+        
+        if (error) {
+            console.error('Error fetching Pro users:', error);
+            return [];
+        }
+        
+        return users || [];
+    } catch (error) {
+        console.error('Error in getProUsersWithTelegram:', error);
+        return [];
+    }
+}
+
+async function getUserByTelegramChatId(chatId) {
+    try {
+        const { data: profile, error } = await supabase
+            .from('profiles')
+            .select('email, full_name, subscription_tier, subscription_status')
+            .eq('telegram_chat_id', chatId.toString())
+            .single();
+        
+        if (error) return null;
+        return profile;
+    } catch (error) {
+        return null;
+    }
+}
+
+// ================================================
+// TELEGRAM WEBHOOK HANDLER (Bot Commands)
+// ================================================
+
+app.post('/webhook', async (req, res) => {
+    try {
+        const { message } = req.body;
+        if (!message) return res.sendStatus(200);
+        
+        const chatId = message.chat.id;
+        const text = message.text || '';
+        const username = message.from.username || message.from.first_name || 'User';
+        
+        console.log(`[Telegram] Received: ${text} from ${username} (${chatId})`);
+        
+        // Handle /start command
+        if (text === '/start') {
+            await sendTelegramMessage(chatId, 
+                `👋 Welcome to <b>SweepSignal Bot</b>!\n\n` +
+                `This bot sends real-time forex signals to Pro subscribers.\n\n` +
+                `<b>Commands:</b>\n` +
+                `/connect CODE - Connect your Pro account\n` +
+                `/status - Check your connection status\n` +
+                `/help - Show this message\n\n` +
+                `To get started, upgrade to Pro at https://vnmrsignal.app/sweepsignal and connect your account from the dashboard.`
+            );
+        }
+        // Handle /connect command
+        else if (text.startsWith('/connect')) {
+            const parts = text.split(' ');
+            if (parts.length !== 2 || parts[1].length !== 6) {
+                await sendTelegramMessage(chatId, 
+                    `❌ <b>Invalid format</b>\n\n` +
+                    `Please use: <code>/connect CODE</code>\n\n` +
+                    `Get your 6-digit code from the SweepSignal dashboard.`
+                );
+            } else {
+                const code = parts[1];
+                const result = await verifyTelegramCode(code, chatId);
+                await sendTelegramMessage(chatId, result.message);
+                
+                if (result.success) {
+                    // Notify admin
+                    await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, 
+                        `🔗 <b>New Telegram Connection</b>\n\nUser: ${username}\nChat ID: ${chatId}`
+                    );
+                }
+            }
+        }
+        // Handle /status command
+        else if (text === '/status') {
+            const profile = await getUserByTelegramChatId(chatId);
+            
+            if (profile) {
+                await sendTelegramMessage(chatId,
+                    `✅ <b>Connected</b>\n\n` +
+                    `Email: ${profile.email}\n` +
+                    `Tier: ${profile.subscription_tier.toUpperCase()}\n` +
+                    `Status: ${profile.subscription_status}\n\n` +
+                    `You're receiving alerts for A+ and A signals.`
+                );
+            } else {
+                await sendTelegramMessage(chatId,
+                    `❌ <b>Not Connected</b>\n\n` +
+                    `Your Telegram is not linked to a SweepSignal account.\n\n` +
+                    `Use /connect CODE with your code from the dashboard.`
+                );
+            }
+        }
+        // Handle /help command
+        else if (text === '/help') {
+            await sendTelegramMessage(chatId,
+                `📖 <b>SweepSignal Bot Help</b>\n\n` +
+                `<b>Commands:</b>\n` +
+                `/start - Welcome message\n` +
+                `/connect CODE - Connect your Pro account\n` +
+                `/status - Check connection status\n` +
+                `/help - Show this message\n\n` +
+                `<b>How it works:</b>\n` +
+                `1. Subscribe to Pro at vnmrsignal.app/sweepsignal\n` +
+                `2. Go to Dashboard → Connect Telegram\n` +
+                `3. Send the 6-digit code here\n` +
+                `4. Receive real-time A+ and A signals!\n\n` +
+                `Questions? Contact toventuresltd@gmail.com`
+            );
+        }
+        // Unknown command
+        else if (text.startsWith('/')) {
+            await sendTelegramMessage(chatId, `Unknown command. Type /help for available commands.`);
+        }
+        
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('Webhook error:', error);
+        res.sendStatus(200);
+    }
+});
+
+// ================================================
+// SIGNAL ALERT FUNCTIONS
+// ================================================
+
 const formatSignalAlert = (signal) => {
     const direction = signal.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
     const gradeEmoji = signal.grade === 'A+' ? '⭐' : signal.grade === 'A' ? '✅' : '🔵';
@@ -223,10 +410,8 @@ const shouldSendAlert = (signal) => {
     // Check if alerts are enabled
     if (!LIQUIDITY_CONFIG.ALERTS.ENABLED) return false;
     
-    // Check minimum grade
-    const gradeThresholds = { 'A+': 90, 'A': 80, 'B': 70, 'C': 60, 'D': 0 };
-    const minGradeScore = gradeThresholds[LIQUIDITY_CONFIG.ALERTS.MIN_GRADE_FOR_ALERT] || 80;
-    if (signal.score < minGradeScore) return false;
+    // Only alert A+ and A grades for Pro users
+    if (signal.grade !== 'A+' && signal.grade !== 'A') return false;
     
     // Check cooldown (prevent duplicate alerts)
     const signalKey = `${signal.instrument}-${signal.direction}-${signal.setupType}`;
@@ -247,29 +432,47 @@ const sendSignalAlerts = async (signals) => {
     
     const alertableSignals = signals.filter(shouldSendAlert);
     
+    if (alertableSignals.length === 0) {
+        console.log('[Telegram] No alertable signals (A+ or A)');
+        return;
+    }
+    
+    // Get Pro users with Telegram connected from Supabase
+    const proUsers = await getProUsersWithTelegram();
+    
+    if (proUsers.length === 0) {
+        console.log('[Telegram] No Pro users with Telegram connected');
+        return;
+    }
+    
+    console.log(`[Telegram] Sending ${alertableSignals.length} signals to ${proUsers.length} Pro users`);
+    
     for (const signal of alertableSignals) {
         const message = formatSignalAlert(signal);
         
-        // Send to all subscribers
-        for (const [chatId, subscriber] of telegramSubscribers) {
-            if (!subscriber.alertsEnabled) continue;
-            
-            // Check subscriber's minimum grade preference
-            const gradeThresholds = { 'A+': 90, 'A': 80, 'B': 70, 'C': 60, 'D': 0 };
-            const minScore = gradeThresholds[subscriber.minGrade] || 80;
-            if (signal.score < minScore) continue;
-            
+        // Send to all Pro users with Telegram connected
+        let sentCount = 0;
+        for (const user of proUsers) {
             try {
-                await sendTelegramMessage(chatId, message);
-                console.log(`[Telegram] Alert sent to ${chatId} for ${signal.instrument} ${signal.direction}`);
+                await sendTelegramMessage(user.telegram_chat_id, message);
+                sentCount++;
+                // Small delay to avoid rate limits
+                await new Promise(r => setTimeout(r, 100));
             } catch (error) {
-                console.error(`[Telegram] Failed to send to ${chatId}:`, error.message);
+                console.error(`[Telegram] Failed to send to ${user.email}:`, error.message);
             }
         }
+        
+        console.log(`[Telegram] Alert sent to ${sentCount} users for ${signal.instrument} ${signal.direction} (${signal.grade})`);
         
         // Mark as alerted
         const signalKey = `${signal.instrument}-${signal.direction}-${signal.setupType}`;
         alertedSignals.set(signalKey, Date.now());
+        
+        // Notify admin
+        await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, 
+            `📤 Alert sent to ${sentCount} Pro users:\n${signal.instrument} ${signal.direction} (${signal.grade})`
+        );
     }
     
     // Clean up old alert records (older than 24 hours)
@@ -282,20 +485,19 @@ const sendSignalAlerts = async (signals) => {
 };
 
 const sendStartupNotification = async () => {
+    const proUsers = await getProUsersWithTelegram();
+    
     const message = `
-🚀 <b>SweepSignal Bot Started</b>
+🚀 <b>SweepSignal Bot v7 Started</b>
 
 ✅ Scanner: Active
-✅ Alerts: Enabled
+✅ Alerts: Enabled (Pro users only)
+✅ User Verification: Active
 📊 Instruments: ${LIQUIDITY_CONFIG.INSTRUMENTS.length}
+👥 Connected Pro Users: ${proUsers.length}
 ⏰ ${new Date().toUTCString()}
 
-You will receive alerts for A+, A, and B grade signals.
-
-Commands:
-/status - Check bot status
-/alerts on - Enable alerts
-/alerts off - Disable alerts
+Pro users will receive A+ and A grade signals.
 `.trim();
     
     try {
@@ -1035,7 +1237,7 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}, sendAlert
     
     console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals. A+: ${gradeCounts['A+']}, A: ${gradeCounts['A']}, B: ${gradeCounts['B']}`);
     
-    // Send Telegram alerts for new signals
+    // Send Telegram alerts for new A+ and A signals to Pro users
     if (sendAlerts) {
         await sendSignalAlerts(allSignals);
     }
@@ -1058,10 +1260,12 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}, sendAlert
 // API ENDPOINTS
 // ================================================
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+    const proUsers = await getProUsersWithTelegram();
+    
     res.json({
         status: 'ok',
-        version: 'v6',
+        version: 'v7',
         product: 'SweepSignal',
         environment: OANDA_CONFIG.environment,
         uptime: process.uptime(),
@@ -1074,17 +1278,19 @@ app.get('/health', (req, res) => {
             multipleTP: true,
             signalScoring: true,
             telegramAlerts: true,
+            supabaseVerification: true,
             newsBias: 'manual-toggle'
         },
         telegram: {
             enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
-            subscribers: telegramSubscribers.size,
-            minGradeForAlert: LIQUIDITY_CONFIG.ALERTS.MIN_GRADE_FOR_ALERT
+            connectedProUsers: proUsers.length,
+            alertGrades: ['A+', 'A']
         }
     });
 });
 
-app.get('/liquidity/scan', async (req, res) => {
+// Scan endpoint
+app.get('/scan', async (req, res) => {
     try {
         const forceRefresh = req.query.refresh === 'true';
         const timeframe = req.query.timeframe || LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME;
@@ -1133,6 +1339,11 @@ app.get('/liquidity/scan', async (req, res) => {
         console.error('Scan error:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+app.get('/liquidity/scan', async (req, res) => {
+    // Alias for /scan
+    return res.redirect(307, '/scan' + (req.url.includes('?') ? '?' + req.url.split('?')[1] : ''));
 });
 
 app.get('/liquidity/signals', async (req, res) => {
@@ -1190,7 +1401,11 @@ app.get('/liquidity/config', (req, res) => {
         sessions: LIQUIDITY_CONFIG.SESSIONS,
         currentSession: getCurrentSession(),
         sessionWarning: getSessionWarning(),
-        alerts: LIQUIDITY_CONFIG.ALERTS
+        alerts: {
+            enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
+            alertGrades: ['A+', 'A'],
+            cooldownMinutes: LIQUIDITY_CONFIG.ALERTS.COOLDOWN_MINUTES
+        }
     });
 });
 
@@ -1203,27 +1418,29 @@ app.post('/telegram/test', async (req, res) => {
         const message = `
 🧪 <b>Test Alert</b>
 
-This is a test message from SweepSignal.
+This is a test message from SweepSignal v7.
 If you see this, Telegram alerts are working!
 
 ⏰ ${new Date().toUTCString()}
 `.trim();
         
         await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, message);
-        res.json({ success: true, message: 'Test alert sent' });
+        res.json({ success: true, message: 'Test alert sent to admin' });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-app.get('/telegram/status', (req, res) => {
+app.get('/telegram/status', async (req, res) => {
+    const proUsers = await getProUsersWithTelegram();
+    
     res.json({
         enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
         botConfigured: !!TELEGRAM_CONFIG.botToken,
-        subscribers: telegramSubscribers.size,
-        minGradeForAlert: LIQUIDITY_CONFIG.ALERTS.MIN_GRADE_FOR_ALERT,
+        connectedProUsers: proUsers.length,
+        alertGrades: ['A+', 'A'],
         cooldownMinutes: LIQUIDITY_CONFIG.ALERTS.COOLDOWN_MINUTES,
-        alertedSignals: alertedSignals.size
+        alertedSignalsInMemory: alertedSignals.size
     });
 });
 
@@ -1233,41 +1450,6 @@ app.post('/telegram/alerts/toggle', (req, res) => {
         enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
         message: `Alerts ${LIQUIDITY_CONFIG.ALERTS.ENABLED ? 'enabled' : 'disabled'}`
     });
-});
-
-app.post('/telegram/subscribe', async (req, res) => {
-    try {
-        const { chatId, minGrade = 'B' } = req.body;
-        
-        if (!chatId) {
-            return res.status(400).json({ error: 'chatId required' });
-        }
-        
-        telegramSubscribers.set(String(chatId), {
-            chatId: String(chatId),
-            minGrade,
-            alertsEnabled: true,
-            subscribedAt: new Date().toISOString()
-        });
-        
-        // Send welcome message
-        const message = `
-✅ <b>Subscribed to SweepSignal!</b>
-
-You will receive alerts for ${minGrade}+ grade signals.
-Default: A+, A, and B grades.
-
-Commands:
-/status - Check status
-/alerts off - Disable alerts
-`.trim();
-        
-        await sendTelegramMessage(chatId, message);
-        
-        res.json({ success: true, subscriber: telegramSubscribers.get(String(chatId)) });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
 });
 
 // OANDA Proxy
@@ -1325,9 +1507,9 @@ const startScheduledScanning = () => {
         try {
             // Scan with default settings, alerts enabled
             await scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME, {
-                minGrade: 'D',  // Scan all, but only alert A+/A
+                minGrade: 'D',  // Scan all grades for dashboard
                 requireHTFConfluence: true
-            }, true);
+            }, true);  // true = send alerts for A+ and A signals
         } catch (error) {
             console.error('[Scheduled] Scan error:', error);
         }
@@ -1337,22 +1519,46 @@ const startScheduledScanning = () => {
 };
 
 // ================================================
+// SETUP TELEGRAM WEBHOOK
+// ================================================
+
+const setupTelegramWebhook = async () => {
+    if (!TELEGRAM_CONFIG.botToken) {
+        console.log('[Telegram] No bot token configured');
+        return;
+    }
+    
+    const webhookUrl = `https://oanda-proxy.onrender.com/webhook`;
+    
+    try {
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_CONFIG.botToken}/setWebhook?url=${webhookUrl}`);
+        const result = await response.json();
+        console.log('[Telegram] Webhook setup:', result.ok ? 'Success' : result.description);
+    } catch (error) {
+        console.error('[Telegram] Webhook setup failed:', error.message);
+    }
+};
+
+// ================================================
 // START SERVER
 // ================================================
 
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('   SWEEPSIGNAL v6                      ');
+    console.log('   SWEEPSIGNAL v7                      ');
     console.log('   Liquidity Sweep Scanner             ');
-    console.log('   With Telegram Alerts                ');
+    console.log('   With Supabase User Verification     ');
     console.log('========================================');
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📊 OANDA Environment: ${OANDA_CONFIG.environment}`);
     console.log(`🔍 Liquidity Scanner: Active`);
     console.log(`📱 Telegram Alerts: ${LIQUIDITY_CONFIG.ALERTS.ENABLED ? 'Enabled' : 'Disabled'}`);
-    console.log(`👥 Subscribers: ${telegramSubscribers.size}`);
+    console.log(`🔐 Supabase: ${SUPABASE_URL ? 'Connected' : 'Not configured'}`);
     console.log(`⏰ Current Session: ${getCurrentSession()}`);
     console.log('========================================');
+    
+    // Setup Telegram webhook
+    await setupTelegramWebhook();
     
     // Start scheduled scanning
     startScheduledScanning();
