@@ -1,7 +1,7 @@
 {
   "name": "oanda-proxy",
-  "version": "7.0.0",
-  "description": "OANDA Proxy Server with Mean Reversion + Liquidity Sweep Scanner + Supabase User Verification",
+  "version": "8.0.0",
+  "description": "OANDA Proxy Server with Mean Reversion + Liquidity Sweep Scanner + Supabase + Stripe Payments",
   "main": "oanda_proxy_production.js",
   "scripts": {
     "start": "node oanda_proxy_production.js"
