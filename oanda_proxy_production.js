@@ -214,7 +214,7 @@ async function verifyTelegramCode(code, chatId) {
         
         return { 
             success: true, 
-            message: `✅ <b>Successfully connected!</b>\n\nYou'll now receive real-time alerts for A+ and A grade signals.\n\nWelcome, ${verification.profiles.full_name || verification.profiles.email}!`
+            message: `✅ <b>Successfully connected!</b>\n\nYou'll now receive real-time alerts for B+ and above signals.\n\nWelcome, ${verification.profiles.full_name || verification.profiles.email}!`
         };
         
     } catch (error) {
@@ -318,7 +318,7 @@ app.post('/webhook', async (req, res) => {
                     `Email: ${profile.email}\n` +
                     `Tier: ${profile.subscription_tier.toUpperCase()}\n` +
                     `Status: ${profile.subscription_status}\n\n` +
-                    `You're receiving alerts for A+ and A signals.`
+                    `You're receiving alerts for B+ and above signals.`
                 );
             } else {
                 await sendTelegramMessage(chatId,
@@ -341,7 +341,7 @@ app.post('/webhook', async (req, res) => {
                 `1. Subscribe to Pro at vnmrsignal.app/sweepsignal\n` +
                 `2. Go to Dashboard → Connect Telegram\n` +
                 `3. Send the 6-digit code here\n` +
-                `4. Receive real-time A+ and A signals!\n\n` +
+                `4. Receive real-time B+ and above signals!\n\n` +
                 `Questions? Contact toventuresltd@gmail.com`
             );
         }
@@ -410,8 +410,8 @@ const shouldSendAlert = (signal) => {
     // Check if alerts are enabled
     if (!LIQUIDITY_CONFIG.ALERTS.ENABLED) return false;
     
-    // Only alert A+ and A grades for Pro users
-    if (signal.grade !== 'A+' && signal.grade !== 'A') return false;
+    // Alert A+, A, and B grades (B+ and above)
+    if (signal.grade !== 'A+' && signal.grade !== 'A' && signal.grade !== 'B') return false;
     
     // Check cooldown (prevent duplicate alerts)
     const signalKey = `${signal.instrument}-${signal.direction}-${signal.setupType}`;
@@ -433,7 +433,7 @@ const sendSignalAlerts = async (signals) => {
     const alertableSignals = signals.filter(shouldSendAlert);
     
     if (alertableSignals.length === 0) {
-        console.log('[Telegram] No alertable signals (A+ or A)');
+        console.log('[Telegram] No alertable signals (B+ and above)');
         return;
     }
     
@@ -497,7 +497,7 @@ const sendStartupNotification = async () => {
 👥 Connected Pro Users: ${proUsers.length}
 ⏰ ${new Date().toUTCString()}
 
-Pro users will receive A+ and A grade signals.
+Pro users will receive B+ and above signals.
 `.trim();
     
     try {
@@ -1237,7 +1237,7 @@ const scanAllInstruments = async (timeframe = 'H1', customConfig = {}, sendAlert
     
     console.log(`[${new Date().toISOString()}] ${timeframe} scan complete. Found ${allSignals.length} signals. A+: ${gradeCounts['A+']}, A: ${gradeCounts['A']}, B: ${gradeCounts['B']}`);
     
-    // Send Telegram alerts for new A+ and A signals to Pro users
+    // Send Telegram alerts for new B+ and above signals to Pro users
     if (sendAlerts) {
         await sendSignalAlerts(allSignals);
     }
@@ -1284,7 +1284,7 @@ app.get('/health', async (req, res) => {
         telegram: {
             enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
             connectedProUsers: proUsers.length,
-            alertGrades: ['A+', 'A']
+            alertGrades: ['A+', 'A', 'B']
         }
     });
 });
@@ -1403,7 +1403,7 @@ app.get('/liquidity/config', (req, res) => {
         sessionWarning: getSessionWarning(),
         alerts: {
             enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
-            alertGrades: ['A+', 'A'],
+            alertGrades: ['A+', 'A', 'B'],
             cooldownMinutes: LIQUIDITY_CONFIG.ALERTS.COOLDOWN_MINUTES
         }
     });
@@ -1438,7 +1438,7 @@ app.get('/telegram/status', async (req, res) => {
         enabled: LIQUIDITY_CONFIG.ALERTS.ENABLED,
         botConfigured: !!TELEGRAM_CONFIG.botToken,
         connectedProUsers: proUsers.length,
-        alertGrades: ['A+', 'A'],
+        alertGrades: ['A+', 'A', 'B'],
         cooldownMinutes: LIQUIDITY_CONFIG.ALERTS.COOLDOWN_MINUTES,
         alertedSignalsInMemory: alertedSignals.size
     });
@@ -1509,7 +1509,7 @@ const startScheduledScanning = () => {
             await scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME, {
                 minGrade: 'D',  // Scan all grades for dashboard
                 requireHTFConfluence: true
-            }, true);  // true = send alerts for A+ and A signals
+            }, true);  // true = send alerts for B+ and above signals
         } catch (error) {
             console.error('[Scheduled] Scan error:', error);
         }
