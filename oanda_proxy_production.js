@@ -2175,23 +2175,71 @@ app.all('/api/*', (req, res) => {
 // ================================================
 
 const startScheduledScanning = () => {
-    // Scan every 5 minutes
-    const SCAN_INTERVAL = 5 * 60 * 1000;
+    // =============================================
+    // M30 & H1: Scan every 5 minutes
+    // =============================================
+    const FAST_INTERVAL = 5 * 60 * 1000; // 5 minutes
     
     setInterval(async () => {
-        console.log(`[Scheduled] Running automated scan...`);
+        console.log(`[Scheduled] Running M30 + H1 scans...`);
         try {
-            // Scan with default settings, alerts enabled
-            await scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME, {
-                minGrade: 'D',  // Scan all grades for dashboard
+            // Scan M30
+            await scanAllInstruments('M30', {
+                minGrade: 'D',
                 requireHTFConfluence: true
-            }, true);  // true = send alerts for B+ and above signals
+            }, true);
+            
+            // Small delay between scans
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Scan H1
+            await scanAllInstruments('H1', {
+                minGrade: 'D',
+                requireHTFConfluence: true
+            }, true);
         } catch (error) {
-            console.error('[Scheduled] Scan error:', error);
+            console.error('[Scheduled] M30/H1 scan error:', error);
         }
-    }, SCAN_INTERVAL);
+    }, FAST_INTERVAL);
     
-    console.log(`[Scheduled] Auto-scan enabled every ${SCAN_INTERVAL / 60000} minutes`);
+    // =============================================
+    // H4: Scan every 15 minutes
+    // =============================================
+    const H4_INTERVAL = 15 * 60 * 1000; // 15 minutes
+    
+    setInterval(async () => {
+        console.log(`[Scheduled] Running H4 scan...`);
+        try {
+            await scanAllInstruments('H4', {
+                minGrade: 'D',
+                requireHTFConfluence: true
+            }, true);
+        } catch (error) {
+            console.error('[Scheduled] H4 scan error:', error);
+        }
+    }, H4_INTERVAL);
+    
+    // =============================================
+    // Daily: Scan every 1 hour
+    // =============================================
+    const DAILY_INTERVAL = 60 * 60 * 1000; // 1 hour
+    
+    setInterval(async () => {
+        console.log(`[Scheduled] Running Daily scan...`);
+        try {
+            await scanAllInstruments('D', {
+                minGrade: 'D',
+                requireHTFConfluence: true
+            }, true);
+        } catch (error) {
+            console.error('[Scheduled] Daily scan error:', error);
+        }
+    }, DAILY_INTERVAL);
+    
+    console.log(`[Scheduled] Auto-scan enabled:`);
+    console.log(`  • M30 + H1: Every 5 minutes`);
+    console.log(`  • H4: Every 15 minutes`);
+    console.log(`  • Daily: Every 1 hour`);
 };
 
 // ================================================
@@ -2260,9 +2308,20 @@ app.listen(PORT, '0.0.0.0', async () => {
         sendStartupNotification();
     }, 2000);
     
-    // Run initial scan
-    setTimeout(() => {
-        console.log(`[Startup] Running initial scan...`);
-        scanAllInstruments(LIQUIDITY_CONFIG.DEFAULT_TIMEFRAME, {}, true).catch(err => console.error('Initial scan error:', err));
+    // Run initial scans for all timeframes
+    setTimeout(async () => {
+        console.log(`[Startup] Running initial scans for all timeframes...`);
+        try {
+            await scanAllInstruments('M30', {}, true);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            await scanAllInstruments('H1', {}, true);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            await scanAllInstruments('H4', {}, true);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            await scanAllInstruments('D', {}, true);
+            console.log(`[Startup] All initial scans complete`);
+        } catch (err) {
+            console.error('Initial scan error:', err);
+        }
     }, 5000);
 });
