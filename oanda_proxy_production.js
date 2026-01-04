@@ -7,6 +7,7 @@ const express = require('express');
 const cors = require('cors');
 const https = require('https');
 const { createClient } = require('@supabase/supabase-js');
+const nodemailer = require('nodemailer');
 
 const app = express();
 
@@ -34,6 +35,18 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 // Stripe Configuration
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+
+// Email Configuration (Hostinger SMTP)
+const EMAIL_CONFIG = {
+    host: 'smtp.hostinger.com',
+    port: 465,
+    secure: true, // SSL
+    auth: {
+        user: process.env.EMAIL_USER || 'calmatwork@epicedgestore.com',
+        pass: process.env.EMAIL_PASSWORD
+    },
+    from: '"SweepSignal" <calmatwork@epicedgestore.com>'
+};
 
 const PORT = process.env.PORT || 3001;
 
@@ -122,6 +135,253 @@ let liquidityCache = {
 
 // Alert tracking to prevent duplicates
 let alertedSignals = new Map(); // key: instrument-direction-setupType, value: timestamp
+
+// ================================================
+// EMAIL FUNCTIONS
+// ================================================
+
+// Create email transporter
+const createEmailTransporter = () => {
+    return nodemailer.createTransport({
+        host: EMAIL_CONFIG.host,
+        port: EMAIL_CONFIG.port,
+        secure: EMAIL_CONFIG.secure,
+        auth: EMAIL_CONFIG.auth
+    });
+};
+
+// Email Templates
+const emailTemplates = {
+    welcome: (userName) => ({
+        subject: '🎉 Welcome to SweepSignal - Your 7-Day Free Trial Starts Now!',
+        html: `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Welcome${userName ? ', ' + userName : ''}! 🎯</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0;">
+                Your 7-day free trial has started. You now have access to our powerful liquidity sweep scanner.
+            </p>
+            <div style="background: rgba(245, 166, 35, 0.1); border: 1px solid rgba(245, 166, 35, 0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                <h3 style="color: #f5a623; font-size: 16px; margin: 0 0 15px 0;">📦 Your Trial Includes:</h3>
+                <ul style="color: #e0e0e0; font-size: 14px; line-height: 2; margin: 0; padding-left: 20px;">
+                    <li>Real-time signal scanner</li>
+                    <li>H1 timeframe access</li>
+                    <li>Signal grading (A+ to D)</li>
+                    <li>Entry, Stop-Loss & 3 Take-Profit levels</li>
+                </ul>
+            </div>
+            <div style="text-align: center;">
+                <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Open Dashboard →</a>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    }),
+    
+    trialExpiringSoon: (userName, daysLeft) => ({
+        subject: '⏰ Your SweepSignal Trial Expires Tomorrow!',
+        html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
+            <div style="background: rgba(249, 115, 22, 0.2); border: 1px solid rgba(249, 115, 22, 0.5); border-radius: 8px; padding: 15px; text-align: center; margin-bottom: 25px;">
+                <span style="color: #f97316; font-size: 16px; font-weight: 600;">⏰ Only ${daysLeft || 1} day left in your trial!</span>
+            </div>
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Hey${userName ? ' ' + userName : ''}!</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0;">
+                Your free trial ends tomorrow. Subscribe now to keep catching A+ setups.
+            </p>
+            <div style="text-align: center;">
+                <a href="https://vnmrsignal.app/sweepsignal/subscribe.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Subscribe Now →</a>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    }),
+    
+    trialExpired: (userName) => ({
+        subject: '😢 Your SweepSignal Trial Has Ended',
+        html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Your trial has ended${userName ? ', ' + userName : ''}</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0;">
+                Your 7-day free trial is over. Subscribe to continue catching A+ liquidity sweep setups.
+            </p>
+            <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 20px; margin-bottom: 15px;">
+                <span style="color: #3b82f6;">Basic Plan</span> - <span style="color: #ffffff; font-weight: 700;">$37/mo</span>
+            </div>
+            <div style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                <span style="color: #8b5cf6;">Pro Plan ⭐</span> - <span style="color: #ffffff; font-weight: 700;">$67/mo</span>
+            </div>
+            <div style="text-align: center;">
+                <a href="https://vnmrsignal.app/sweepsignal/subscribe.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Reactivate My Access →</a>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    }),
+
+    subscriptionConfirmation: (userName, plan) => ({
+        subject: '🎉 Welcome to SweepSignal ' + (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : '') + '!',
+        html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(34, 197, 94, 0.05)); border-radius: 16px; padding: 40px; border: 1px solid rgba(34, 197, 94, 0.3);">
+            <div style="text-align: center; margin-bottom: 25px;">
+                <span style="font-size: 48px;">🎉</span>
+            </div>
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0; text-align: center;">You're Now a ${plan ? plan.toUpperCase() : ''} Member!</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0; text-align: center;">
+                Thank you for subscribing${userName ? ', ' + userName : ''}! You now have full access to SweepSignal.
+            </p>
+            <div style="text-align: center;">
+                <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Go to Dashboard →</a>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    })
+};
+
+// Send email function
+const sendEmail = async (to, template, data = {}) => {
+    try {
+        const transporter = createEmailTransporter();
+        const emailContent = template(data.userName, data.extra);
+        
+        const mailOptions = {
+            from: EMAIL_CONFIG.from,
+            to: to,
+            subject: emailContent.subject,
+            html: emailContent.html
+        };
+        
+        const info = await transporter.sendMail(mailOptions);
+        console.log('[Email] Sent to ' + to + ': ' + emailContent.subject);
+        return { success: true, messageId: info.messageId };
+    } catch (error) {
+        console.error('[Email] Failed to send to ' + to + ':', error.message);
+        return { success: false, error: error.message };
+    }
+};
+
+// Check for expiring trials and send reminder emails
+const checkExpiringTrials = async () => {
+    try {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(23, 59, 59, 999);
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const { data: expiringTrials, error } = await supabase
+            .from('profiles')
+            .select('id, email, full_name, trial_end_date')
+            .eq('subscription_status', 'trialing')
+            .gte('trial_end_date', today.toISOString())
+            .lte('trial_end_date', tomorrow.toISOString());
+        
+        if (error) {
+            console.error('[Email] Error fetching expiring trials:', error);
+            return;
+        }
+        
+        console.log('[Email] Found ' + (expiringTrials?.length || 0) + ' trials expiring soon');
+        
+        for (const user of expiringTrials || []) {
+            await sendEmail(user.email, emailTemplates.trialExpiringSoon, {
+                userName: user.full_name,
+                extra: 1
+            });
+        }
+    } catch (error) {
+        console.error('[Email] Error in checkExpiringTrials:', error);
+    }
+};
+
+// Check for expired trials and send expired emails
+const checkExpiredTrials = async () => {
+    try {
+        const now = new Date();
+        
+        const { data: expiredTrials, error } = await supabase
+            .from('profiles')
+            .select('id, email, full_name, trial_end_date')
+            .eq('subscription_status', 'trialing')
+            .lt('trial_end_date', now.toISOString());
+        
+        if (error) {
+            console.error('[Email] Error fetching expired trials:', error);
+            return;
+        }
+        
+        console.log('[Email] Found ' + (expiredTrials?.length || 0) + ' expired trials');
+        
+        for (const user of expiredTrials || []) {
+            await supabase
+                .from('profiles')
+                .update({ subscription_status: 'expired' })
+                .eq('id', user.id);
+            
+            await sendEmail(user.email, emailTemplates.trialExpired, {
+                userName: user.full_name
+            });
+        }
+    } catch (error) {
+        console.error('[Email] Error in checkExpiredTrials:', error);
+    }
+};
 
 app.use(cors({ origin: '*' }));
 
@@ -1544,6 +1804,13 @@ app.post('/stripe-webhook', async (req, res) => {
                 const subscriptionId = session.subscription;
                 
                 if (userId && plan) {
+                    // Get user details first
+                    const { data: userProfile } = await supabase
+                        .from('profiles')
+                        .select('email, full_name')
+                        .eq('id', userId)
+                        .single();
+                    
                     // Update user profile in Supabase
                     const { error } = await supabase
                         .from('profiles')
@@ -1560,6 +1827,14 @@ app.post('/stripe-webhook', async (req, res) => {
                         console.error('Failed to update profile:', error);
                     } else {
                         console.log(`[Stripe] User ${userId} subscribed to ${plan}`);
+                        
+                        // Send subscription confirmation email
+                        if (userProfile?.email) {
+                            await sendEmail(userProfile.email, emailTemplates.subscriptionConfirmation, {
+                                userName: userProfile.full_name,
+                                extra: plan
+                            });
+                        }
                         
                         // Send Telegram notification to admin
                         await sendTelegramMessage(TELEGRAM_CONFIG.adminChatId, 
@@ -1788,6 +2063,71 @@ app.post('/admin/analytics', async (req, res) => {
     }
 });
 
+// ================================================
+// EMAIL ENDPOINTS
+// ================================================
+
+// Send welcome email (called from signup)
+app.post('/send-welcome-email', async (req, res) => {
+    try {
+        const { email, name } = req.body;
+        
+        if (!email) {
+            return res.status(400).json({ error: 'Email required' });
+        }
+        
+        const result = await sendEmail(email, emailTemplates.welcome, {
+            userName: name
+        });
+        
+        res.json(result);
+    } catch (error) {
+        console.error('Welcome email error:', error);
+        res.status(500).json({ error: 'Failed to send welcome email' });
+    }
+});
+
+// Manual trigger to check expiring trials (for testing)
+app.post('/check-expiring-trials', async (req, res) => {
+    try {
+        const { adminEmail } = req.body;
+        
+        if (adminEmail !== 'toventuresltd@gmail.com') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        await checkExpiringTrials();
+        await checkExpiredTrials();
+        
+        res.json({ success: true, message: 'Trial check completed' });
+    } catch (error) {
+        console.error('Trial check error:', error);
+        res.status(500).json({ error: 'Failed to check trials' });
+    }
+});
+
+// Test email endpoint (admin only)
+app.post('/test-email', async (req, res) => {
+    try {
+        const { adminEmail, testEmail, template } = req.body;
+        
+        if (adminEmail !== 'toventuresltd@gmail.com') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        const templateFn = emailTemplates[template] || emailTemplates.welcome;
+        const result = await sendEmail(testEmail || adminEmail, templateFn, {
+            userName: 'Test User',
+            extra: template === 'subscriptionConfirmation' ? 'pro' : 1
+        });
+        
+        res.json(result);
+    } catch (error) {
+        console.error('Test email error:', error);
+        res.status(500).json({ error: 'Failed to send test email' });
+    }
+});
+
 // OANDA Proxy
 app.all('/api/*', (req, res) => {
     const oandaPath = req.path.replace('/api', '');
@@ -1881,9 +2221,9 @@ const setupTelegramWebhook = async () => {
 
 app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('   SWEEPSIGNAL v8                      ');
+    console.log('   SWEEPSIGNAL v9                      ');
     console.log('   Liquidity Sweep Scanner             ');
-    console.log('   With Stripe Payments                ');
+    console.log('   With Stripe + Email                 ');
     console.log('========================================');
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📊 OANDA Environment: ${OANDA_CONFIG.environment}`);
@@ -1891,6 +2231,7 @@ app.listen(PORT, '0.0.0.0', async () => {
     console.log(`📱 Telegram Alerts: ${LIQUIDITY_CONFIG.ALERTS.ENABLED ? 'Enabled' : 'Disabled'}`);
     console.log(`🔐 Supabase: ${SUPABASE_URL ? 'Connected' : 'Not configured'}`);
     console.log(`💳 Stripe: ${STRIPE_SECRET_KEY ? 'Configured' : 'Not configured'}`);
+    console.log(`📧 Email: ${EMAIL_CONFIG.auth.pass ? 'Configured' : 'Not configured'}`);
     console.log(`⏰ Current Session: ${getCurrentSession()}`);
     console.log('========================================');
     
@@ -1899,6 +2240,20 @@ app.listen(PORT, '0.0.0.0', async () => {
     
     // Start scheduled scanning
     startScheduledScanning();
+    
+    // Start email trial checker (runs every hour)
+    setInterval(async () => {
+        console.log('[Email] Running scheduled trial check...');
+        await checkExpiringTrials();
+        await checkExpiredTrials();
+    }, 60 * 60 * 1000); // Every hour
+    
+    // Run initial trial check after 30 seconds
+    setTimeout(async () => {
+        console.log('[Email] Running initial trial check...');
+        await checkExpiringTrials();
+        await checkExpiredTrials();
+    }, 30000);
     
     // Send startup notification
     setTimeout(() => {
