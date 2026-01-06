@@ -153,7 +153,7 @@ const createEmailTransporter = () => {
 // Email Templates
 const emailTemplates = {
     welcome: (userName) => ({
-        subject: '🎉 Welcome to SweepSignal - Your 7-Day Free Trial Starts Now!',
+        subject: '🎉 Welcome to SweepSignal - Your Quick Start Guide is Attached!',
         html: `
 <!DOCTYPE html>
 <html>
@@ -169,22 +169,51 @@ const emailTemplates = {
         <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
             <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Welcome${userName ? ', ' + userName : ''}! 🎯</h2>
             <p style="color: #a0a0a0; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0;">
-                Your 7-day free trial has started. You now have access to our powerful liquidity sweep scanner.
+                Your <strong style="color: #ffd700;">7-day free trial</strong> has started. You now have access to our institutional-grade liquidity sweep scanner.
             </p>
+            
+            <!-- PDF Notice -->
+            <div style="background: rgba(139, 92, 246, 0.15); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                <h3 style="color: #a78bfa; font-size: 16px; margin: 0 0 10px 0;">📘 Quick Start Guide Attached</h3>
+                <p style="color: #c4b5fd; font-size: 14px; line-height: 1.6; margin: 0;">
+                    We've attached a <strong>6-page Quick Start Guide</strong> to help you understand the strategy and get started fast.
+                </p>
+            </div>
+            
             <div style="background: rgba(245, 166, 35, 0.1); border: 1px solid rgba(245, 166, 35, 0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
                 <h3 style="color: #f5a623; font-size: 16px; margin: 0 0 15px 0;">📦 Your Trial Includes:</h3>
                 <ul style="color: #e0e0e0; font-size: 14px; line-height: 2; margin: 0; padding-left: 20px;">
-                    <li>Real-time signal scanner</li>
-                    <li>H1 timeframe access</li>
+                    <li>Real-time signal scanner (H1 timeframe)</li>
                     <li>Signal grading (A+ to D)</li>
+                    <li>The Enforcer™ — blocks bad setups automatically</li>
                     <li>Entry, Stop-Loss & 3 Take-Profit levels</li>
                 </ul>
             </div>
+            
+            <!-- Quick Tips -->
+            <div style="background: rgba(0, 255, 136, 0.1); border: 1px solid rgba(0, 255, 136, 0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                <h3 style="color: #00ff88; font-size: 16px; margin: 0 0 10px 0;">⚡ Pro Tips to Get Started:</h3>
+                <ol style="color: #e0e0e0; font-size: 14px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                    <li>Keep The Enforcer on <strong style="color: #a78bfa;">HARD mode</strong></li>
+                    <li>Trade only <strong style="color: #ffd700;">A+ signals</strong></li>
+                    <li>Wait for <strong>London or New York</strong> session</li>
+                </ol>
+            </div>
+            
             <div style="text-align: center;">
                 <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Open Dashboard →</a>
             </div>
         </div>
+        
+        <!-- Trial reminder -->
+        <div style="text-align: center; margin: 30px 0; padding: 15px; background: rgba(255, 215, 0, 0.05); border-radius: 8px; border: 1px solid rgba(255, 215, 0, 0.2);">
+            <p style="color: #ffd700; font-size: 13px; margin: 0;">
+                ⏰ Your trial ends in 7 days. Subscribe anytime at <a href="https://vnmrsignal.app/sweepsignal/subscribe.html" style="color: #ffd700;">vnmrsignal.app</a>
+            </p>
+        </div>
+        
         <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #888; font-size: 13px; margin: 0 0 10px 0;">Questions? Reply to this email.</p>
             <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
         </div>
     </div>
@@ -415,6 +444,37 @@ const sendSubscriptionEmailWithPDF = async (email, userName, plan) => {
         
     } catch (error) {
         console.error('[Email] Error sending subscription email:', error.message);
+        return { success: false, error: error.message };
+    }
+};
+
+// Send welcome email with trial PDF attachment
+const sendWelcomeEmailWithPDF = async (email, userName) => {
+    try {
+        let attachments = [];
+        
+        try {
+            const pdfUrl = 'https://vnmrsignal.app/sweepsignal/SweepSignal_Trial_Guide.pdf';
+            const pdfBuffer = await fetchPDFAttachment(pdfUrl);
+            
+            attachments.push({
+                filename: 'SweepSignal_Quick_Start_Guide.pdf',
+                content: pdfBuffer,
+                contentType: 'application/pdf'
+            });
+            
+            console.log('[Email] Trial PDF attachment prepared for ' + email);
+        } catch (pdfError) {
+            console.error('[Email] Failed to fetch trial PDF:', pdfError.message);
+            // Continue without attachment
+        }
+        
+        return await sendEmail(email, emailTemplates.welcome, {
+            userName: userName
+        }, attachments);
+        
+    } catch (error) {
+        console.error('[Email] Error sending welcome email:', error.message);
         return { success: false, error: error.message };
     }
 };
@@ -2181,9 +2241,8 @@ app.post('/send-welcome-email', async (req, res) => {
             return res.status(400).json({ error: 'Email required' });
         }
         
-        const result = await sendEmail(email, emailTemplates.welcome, {
-            userName: name
-        });
+        // Send welcome email with Trial Guide PDF attached
+        const result = await sendWelcomeEmailWithPDF(email, name);
         
         res.json(result);
     } catch (error) {
