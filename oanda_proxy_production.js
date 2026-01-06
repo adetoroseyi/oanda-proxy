@@ -261,7 +261,7 @@ const emailTemplates = {
     }),
 
     subscriptionConfirmation: (userName, plan) => ({
-        subject: '🎉 Welcome to SweepSignal ' + (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : '') + '!',
+        subject: '🎉 Welcome to SweepSignal ' + (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : '') + '! Your Onboarding Guide is Attached',
         html: `
 <!DOCTYPE html>
 <html>
@@ -279,11 +279,58 @@ const emailTemplates = {
             <p style="color: #a0a0a0; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0; text-align: center;">
                 Thank you for subscribing${userName ? ', ' + userName : ''}! You now have full access to SweepSignal.
             </p>
-            <div style="text-align: center;">
-                <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Go to Dashboard →</a>
+            
+            <!-- PDF Attachment Notice -->
+            <div style="background: rgba(139, 92, 246, 0.15); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                <h3 style="color: #a78bfa; font-size: 16px; margin: 0 0 10px 0;">📘 Onboarding Guide Attached</h3>
+                <p style="color: #c4b5fd; font-size: 14px; line-height: 1.6; margin: 0;">
+                    We've attached your complete <strong>SweepSignal Onboarding Guide</strong> PDF to this email. It covers:
+                </p>
+                <ul style="color: #c4b5fd; font-size: 13px; line-height: 1.8; margin: 10px 0 0 0; padding-left: 20px;">
+                    <li>The 3-step trading strategy</li>
+                    <li>How The Enforcer protects you</li>
+                    <li>When to trade (sessions)</li>
+                    <li>Common mistakes to avoid</li>
+                    <li>Quick reference card</li>
+                </ul>
             </div>
+            
+            <!-- Quick Start -->
+            <div style="background: rgba(245, 166, 35, 0.1); border: 1px solid rgba(245, 166, 35, 0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                <h3 style="color: #f5a623; font-size: 16px; margin: 0 0 15px 0;">🚀 Quick Start Checklist</h3>
+                <ol style="color: #e0e0e0; font-size: 14px; line-height: 2; margin: 0; padding-left: 20px;">
+                    <li>Open the dashboard</li>
+                    <li>Keep Enforcer on <strong style="color: #a78bfa;">HARD mode</strong></li>
+                    <li>Set grade filter to <strong style="color: #ffd700;">A+ Only</strong></li>
+                    <li>Wait for London or NY session</li>
+                    <li>Trade only signals that pass all rules</li>
+                </ol>
+            </div>
+            
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Open Dashboard →</a>
+            </div>
+            
+            ${plan === 'pro' ? `
+            <!-- Pro Features -->
+            <div style="background: rgba(0, 136, 204, 0.1); border: 1px solid rgba(0, 136, 204, 0.3); border-radius: 12px; padding: 20px; margin-top: 20px;">
+                <h3 style="color: #0088cc; font-size: 16px; margin: 0 0 10px 0;">📱 Pro Feature: Telegram Alerts</h3>
+                <p style="color: #a0a0a0; font-size: 14px; line-height: 1.6; margin: 0;">
+                    Connect Telegram in your dashboard to receive instant B+ signal alerts on your phone!
+                </p>
+            </div>
+            ` : ''}
         </div>
+        
+        <!-- Golden Rule -->
+        <div style="text-align: center; margin: 30px 0; padding: 20px; background: rgba(255, 215, 0, 0.05); border-radius: 8px; border: 1px solid rgba(255, 215, 0, 0.2);">
+            <p style="color: #ffd700; font-size: 14px; margin: 0; font-style: italic;">
+                "No bias, no trade. No closure, no trade. If unsure, don't trade."
+            </p>
+        </div>
+        
         <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #888; font-size: 13px; margin: 0 0 10px 0;">Questions? Reply to this email or contact support.</p>
             <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
         </div>
     </div>
@@ -293,8 +340,8 @@ const emailTemplates = {
     })
 };
 
-// Send email function
-const sendEmail = async (to, template, data = {}) => {
+// Send email function with optional attachments
+const sendEmail = async (to, template, data = {}, attachments = []) => {
     try {
         const transporter = createEmailTransporter();
         const emailContent = template(data.userName, data.extra);
@@ -306,11 +353,68 @@ const sendEmail = async (to, template, data = {}) => {
             html: emailContent.html
         };
         
+        // Add attachments if provided
+        if (attachments && attachments.length > 0) {
+            mailOptions.attachments = attachments;
+        }
+        
         const info = await transporter.sendMail(mailOptions);
         console.log('[Email] Sent to ' + to + ': ' + emailContent.subject);
         return { success: true, messageId: info.messageId };
     } catch (error) {
         console.error('[Email] Failed to send to ' + to + ':', error.message);
+        return { success: false, error: error.message };
+    }
+};
+
+// Fetch PDF for email attachment
+const fetchPDFAttachment = async (url) => {
+    return new Promise((resolve, reject) => {
+        const protocol = url.startsWith('https') ? require('https') : require('http');
+        
+        protocol.get(url, (response) => {
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                resolve(buffer);
+            });
+            response.on('error', reject);
+        }).on('error', reject);
+    });
+};
+
+// Send subscription email with PDF attachment for Basic plan
+const sendSubscriptionEmailWithPDF = async (email, userName, plan) => {
+    try {
+        let attachments = [];
+        
+        // Only attach PDF for Basic and Pro plans
+        if (plan === 'basic' || plan === 'pro') {
+            try {
+                const pdfUrl = 'https://vnmrsignal.app/sweepsignal/SweepSignal_Onboarding_Guide.pdf';
+                const pdfBuffer = await fetchPDFAttachment(pdfUrl);
+                
+                attachments.push({
+                    filename: 'SweepSignal_Onboarding_Guide.pdf',
+                    content: pdfBuffer,
+                    contentType: 'application/pdf'
+                });
+                
+                console.log('[Email] PDF attachment prepared for ' + email);
+            } catch (pdfError) {
+                console.error('[Email] Failed to fetch PDF attachment:', pdfError.message);
+                // Continue without attachment
+            }
+        }
+        
+        return await sendEmail(email, emailTemplates.subscriptionConfirmation, {
+            userName: userName,
+            extra: plan
+        }, attachments);
+        
+    } catch (error) {
+        console.error('[Email] Error sending subscription email:', error.message);
         return { success: false, error: error.message };
     }
 };
@@ -1828,12 +1932,13 @@ app.post('/stripe-webhook', async (req, res) => {
                     } else {
                         console.log(`[Stripe] User ${userId} subscribed to ${plan}`);
                         
-                        // Send subscription confirmation email
+                        // Send subscription confirmation email with PDF attachment
                         if (userProfile?.email) {
-                            await sendEmail(userProfile.email, emailTemplates.subscriptionConfirmation, {
-                                userName: userProfile.full_name,
-                                extra: plan
-                            });
+                            await sendSubscriptionEmailWithPDF(
+                                userProfile.email, 
+                                userProfile.full_name, 
+                                plan
+                            );
                         }
                         
                         // Send Telegram notification to admin
