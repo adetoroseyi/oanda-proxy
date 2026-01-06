@@ -289,6 +289,170 @@ const emailTemplates = {
         `
     }),
 
+    // ================================================
+    // NURTURE SEQUENCE EMAILS
+    // ================================================
+    
+    // Day 3: Check-in - How's it going?
+    trialDay3: (userName) => ({
+        subject: '👋 How\'s your trading going so far?',
+        html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Hey${userName ? ' ' + userName : ''}! 👋</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.8; margin: 0 0 25px 0;">
+                You've been using SweepSignal for 3 days now. I wanted to check in and see how it's going.
+            </p>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.8; margin: 0 0 25px 0;">
+                Have you noticed how The Enforcer filters out the noise? That's intentional — we'd rather show you <strong style="color: #ffd700;">zero signals</strong> than bad signals.
+            </p>
+            
+            <div style="background: rgba(0, 255, 136, 0.1); border: 1px solid rgba(0, 255, 136, 0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                <h3 style="color: #00ff88; font-size: 16px; margin: 0 0 12px 0;">💡 Quick Tip</h3>
+                <p style="color: #e0e0e0; font-size: 14px; line-height: 1.6; margin: 0;">
+                    The best traders don't trade every day. If you see no A+ signals, that's the system <em>protecting</em> you. Patience is profit.
+                </p>
+            </div>
+            
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.8; margin: 0 0 25px 0;">
+                Have questions about a setup you saw? Just reply to this email — I read every message.
+            </p>
+            
+            <div style="text-align: center;">
+                <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Open Dashboard →</a>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    }),
+    
+    // Day 5: Value - Pro tips for better results
+    trialDay5: (userName) => ({
+        subject: '🎯 3 tips to get more from SweepSignal',
+        html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Getting better results${userName ? ', ' + userName : ''} 🎯</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.8; margin: 0 0 25px 0;">
+                After 5 days of using SweepSignal, here are 3 tips that separate consistent traders from the rest:
+            </p>
+            
+            <!-- Tip 1 -->
+            <div style="background: rgba(139, 92, 246, 0.1); border-left: 4px solid #8b5cf6; padding: 15px 20px; margin-bottom: 15px; border-radius: 0 8px 8px 0;">
+                <h4 style="color: #a78bfa; font-size: 14px; margin: 0 0 8px 0;">1. Trust The Enforcer</h4>
+                <p style="color: #c4b5fd; font-size: 14px; line-height: 1.6; margin: 0;">
+                    If it blocks a signal, there's a reason. Don't switch to Passive mode to "see more signals." More signals ≠ more profit.
+                </p>
+            </div>
+            
+            <!-- Tip 2 -->
+            <div style="background: rgba(0, 217, 255, 0.1); border-left: 4px solid #00d9ff; padding: 15px 20px; margin-bottom: 15px; border-radius: 0 8px 8px 0;">
+                <h4 style="color: #00d9ff; font-size: 14px; margin: 0 0 8px 0;">2. Check the Score Breakdown</h4>
+                <p style="color: #a0e7ff; font-size: 14px; line-height: 1.6; margin: 0;">
+                    Don't just look at the grade. Check <em>why</em> it scored that way. Displacement and FVG scores tell you if the setup has real confirmation.
+                </p>
+            </div>
+            
+            <!-- Tip 3 -->
+            <div style="background: rgba(0, 255, 136, 0.1); border-left: 4px solid #00ff88; padding: 15px 20px; margin-bottom: 20px; border-radius: 0 8px 8px 0;">
+                <h4 style="color: #00ff88; font-size: 14px; margin: 0 0 8px 0;">3. Trade London or NY Only</h4>
+                <p style="color: #a0ffc8; font-size: 14px; line-height: 1.6; margin: 0;">
+                    Asian session builds liquidity. London and NY sessions sweep it. Trade the expansion, not the buildup.
+                </p>
+            </div>
+            
+            <div style="background: rgba(255, 215, 0, 0.1); border: 1px solid rgba(255, 215, 0, 0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px; text-align: center;">
+                <p style="color: #ffd700; font-size: 14px; margin: 0; font-style: italic;">
+                    "The goal isn't to trade more. It's to trade better."
+                </p>
+            </div>
+            
+            <div style="text-align: center;">
+                <a href="https://vnmrsignal.app/sweepsignal/dashboard.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Apply These Tips →</a>
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin: 25px 0; padding: 15px;">
+            <p style="color: #888; font-size: 13px; margin: 0;">
+                ⏰ Your trial ends in 2 days. Subscribe anytime at <a href="https://vnmrsignal.app/sweepsignal/subscribe.html" style="color: #ffd700; text-decoration: none;">vnmrsignal.app</a>
+            </p>
+        </div>
+        
+        <div style="text-align: center; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    }),
+    
+    // Day 8: Win-back - 1 day after expiry
+    trialWinback: (userName) => ({
+        subject: '🤔 Was SweepSignal helpful?',
+        html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a2e; padding: 40px 20px;">
+        <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="color: #f5a623; font-size: 32px; margin: 0;">⭐ SweepSignal</h1>
+        </div>
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border-radius: 16px; padding: 40px; border: 1px solid rgba(255,255,255,0.1);">
+            <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 20px 0;">Quick question${userName ? ', ' + userName : ''}...</h2>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.8; margin: 0 0 25px 0;">
+                Your trial ended yesterday, and I wanted to ask — did SweepSignal help you see the market differently?
+            </p>
+            <p style="color: #a0a0a0; font-size: 16px; line-height: 1.8; margin: 0 0 25px 0;">
+                Even if you didn't take any trades, understanding <em>where</em> liquidity sits and <em>how</em> institutions hunt it changes everything.
+            </p>
+            
+            <div style="background: rgba(255,255,255,0.03); border-radius: 12px; padding: 25px; margin-bottom: 25px;">
+                <p style="color: #ffffff; font-size: 15px; line-height: 1.8; margin: 0 0 15px 0;">
+                    <strong>If something wasn't clear</strong> or you had trouble getting started, just reply to this email. I'm happy to help.
+                </p>
+                <p style="color: #a0a0a0; font-size: 15px; line-height: 1.8; margin: 0;">
+                    <strong>If you're ready to continue</strong>, your dashboard is waiting. All your settings are still there.
+                </p>
+            </div>
+            
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a href="https://vnmrsignal.app/sweepsignal/subscribe.html" style="display: inline-block; background: linear-gradient(135deg, #f5a623 0%, #f57c00 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Reactivate My Access →</a>
+            </div>
+            
+            <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0; text-align: center;">
+                No pressure. Just here if you need anything.
+            </p>
+        </div>
+        <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <p style="color: #666; font-size: 12px; margin: 0;">© 2026 SweepSignal. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+        `
+    }),
+
     subscriptionConfirmation: (userName, plan) => ({
         subject: '🎉 Welcome to SweepSignal ' + (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : '') + '! Your Onboarding Guide is Attached',
         html: `
@@ -545,6 +709,223 @@ const checkExpiredTrials = async () => {
     } catch (error) {
         console.error('[Email] Error in checkExpiredTrials:', error);
     }
+};
+
+// ================================================
+// NURTURE EMAIL SEQUENCE
+// ================================================
+
+// Check for Day 3 nurture emails
+const checkDay3Nurture = async () => {
+    try {
+        const now = new Date();
+        
+        // Day 3 = trial started 3 days ago
+        // Trial is 7 days, so day 3 means trial_end_date is 4 days from now
+        const day3Start = new Date(now);
+        day3Start.setDate(day3Start.getDate() + 4);
+        day3Start.setHours(0, 0, 0, 0);
+        
+        const day3End = new Date(day3Start);
+        day3End.setHours(23, 59, 59, 999);
+        
+        const { data: day3Users, error } = await supabase
+            .from('profiles')
+            .select('id, email, full_name, trial_end_date, nurture_day3_sent')
+            .eq('subscription_status', 'trialing')
+            .gte('trial_end_date', day3Start.toISOString())
+            .lte('trial_end_date', day3End.toISOString())
+            .or('nurture_day3_sent.is.null,nurture_day3_sent.eq.false');
+        
+        if (error) {
+            // Column might not exist yet, try without the filter
+            const { data: fallbackUsers, error: fallbackError } = await supabase
+                .from('profiles')
+                .select('id, email, full_name, trial_end_date')
+                .eq('subscription_status', 'trialing')
+                .gte('trial_end_date', day3Start.toISOString())
+                .lte('trial_end_date', day3End.toISOString());
+            
+            if (fallbackError) {
+                console.error('[Nurture] Error fetching day 3 users:', fallbackError);
+                return;
+            }
+            
+            console.log('[Nurture] Day 3: Found ' + (fallbackUsers?.length || 0) + ' users');
+            
+            for (const user of fallbackUsers || []) {
+                await sendEmail(user.email, emailTemplates.trialDay3, {
+                    userName: user.full_name
+                });
+                
+                // Try to mark as sent (will fail silently if column doesn't exist)
+                await supabase
+                    .from('profiles')
+                    .update({ nurture_day3_sent: true })
+                    .eq('id', user.id);
+            }
+            return;
+        }
+        
+        console.log('[Nurture] Day 3: Found ' + (day3Users?.length || 0) + ' users');
+        
+        for (const user of day3Users || []) {
+            await sendEmail(user.email, emailTemplates.trialDay3, {
+                userName: user.full_name
+            });
+            
+            await supabase
+                .from('profiles')
+                .update({ nurture_day3_sent: true })
+                .eq('id', user.id);
+        }
+    } catch (error) {
+        console.error('[Nurture] Error in checkDay3Nurture:', error);
+    }
+};
+
+// Check for Day 5 nurture emails
+const checkDay5Nurture = async () => {
+    try {
+        const now = new Date();
+        
+        // Day 5 = trial started 5 days ago
+        // Trial is 7 days, so day 5 means trial_end_date is 2 days from now
+        const day5Start = new Date(now);
+        day5Start.setDate(day5Start.getDate() + 2);
+        day5Start.setHours(0, 0, 0, 0);
+        
+        const day5End = new Date(day5Start);
+        day5End.setHours(23, 59, 59, 999);
+        
+        const { data: day5Users, error } = await supabase
+            .from('profiles')
+            .select('id, email, full_name, trial_end_date, nurture_day5_sent')
+            .eq('subscription_status', 'trialing')
+            .gte('trial_end_date', day5Start.toISOString())
+            .lte('trial_end_date', day5End.toISOString())
+            .or('nurture_day5_sent.is.null,nurture_day5_sent.eq.false');
+        
+        if (error) {
+            // Column might not exist yet, try without the filter
+            const { data: fallbackUsers, error: fallbackError } = await supabase
+                .from('profiles')
+                .select('id, email, full_name, trial_end_date')
+                .eq('subscription_status', 'trialing')
+                .gte('trial_end_date', day5Start.toISOString())
+                .lte('trial_end_date', day5End.toISOString());
+            
+            if (fallbackError) {
+                console.error('[Nurture] Error fetching day 5 users:', fallbackError);
+                return;
+            }
+            
+            console.log('[Nurture] Day 5: Found ' + (fallbackUsers?.length || 0) + ' users');
+            
+            for (const user of fallbackUsers || []) {
+                await sendEmail(user.email, emailTemplates.trialDay5, {
+                    userName: user.full_name
+                });
+                
+                await supabase
+                    .from('profiles')
+                    .update({ nurture_day5_sent: true })
+                    .eq('id', user.id);
+            }
+            return;
+        }
+        
+        console.log('[Nurture] Day 5: Found ' + (day5Users?.length || 0) + ' users');
+        
+        for (const user of day5Users || []) {
+            await sendEmail(user.email, emailTemplates.trialDay5, {
+                userName: user.full_name
+            });
+            
+            await supabase
+                .from('profiles')
+                .update({ nurture_day5_sent: true })
+                .eq('id', user.id);
+        }
+    } catch (error) {
+        console.error('[Nurture] Error in checkDay5Nurture:', error);
+    }
+};
+
+// Check for Day 8 win-back emails (1 day after trial expired)
+const checkWinbackEmails = async () => {
+    try {
+        const now = new Date();
+        
+        // Day 8 = trial expired yesterday
+        const yesterdayStart = new Date(now);
+        yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+        yesterdayStart.setHours(0, 0, 0, 0);
+        
+        const yesterdayEnd = new Date(yesterdayStart);
+        yesterdayEnd.setHours(23, 59, 59, 999);
+        
+        const { data: winbackUsers, error } = await supabase
+            .from('profiles')
+            .select('id, email, full_name, trial_end_date, nurture_winback_sent')
+            .eq('subscription_status', 'expired')
+            .gte('trial_end_date', yesterdayStart.toISOString())
+            .lte('trial_end_date', yesterdayEnd.toISOString())
+            .or('nurture_winback_sent.is.null,nurture_winback_sent.eq.false');
+        
+        if (error) {
+            // Column might not exist yet, try without the filter
+            const { data: fallbackUsers, error: fallbackError } = await supabase
+                .from('profiles')
+                .select('id, email, full_name, trial_end_date')
+                .eq('subscription_status', 'expired')
+                .gte('trial_end_date', yesterdayStart.toISOString())
+                .lte('trial_end_date', yesterdayEnd.toISOString());
+            
+            if (fallbackError) {
+                console.error('[Nurture] Error fetching winback users:', fallbackError);
+                return;
+            }
+            
+            console.log('[Nurture] Winback: Found ' + (fallbackUsers?.length || 0) + ' users');
+            
+            for (const user of fallbackUsers || []) {
+                await sendEmail(user.email, emailTemplates.trialWinback, {
+                    userName: user.full_name
+                });
+                
+                await supabase
+                    .from('profiles')
+                    .update({ nurture_winback_sent: true })
+                    .eq('id', user.id);
+            }
+            return;
+        }
+        
+        console.log('[Nurture] Winback: Found ' + (winbackUsers?.length || 0) + ' users');
+        
+        for (const user of winbackUsers || []) {
+            await sendEmail(user.email, emailTemplates.trialWinback, {
+                userName: user.full_name
+            });
+            
+            await supabase
+                .from('profiles')
+                .update({ nurture_winback_sent: true })
+                .eq('id', user.id);
+        }
+    } catch (error) {
+        console.error('[Nurture] Error in checkWinbackEmails:', error);
+    }
+};
+
+// Run all nurture checks
+const runNurtureSequence = async () => {
+    console.log('[Nurture] Running nurture email sequence...');
+    await checkDay3Nurture();
+    await checkDay5Nurture();
+    await checkWinbackEmails();
+    console.log('[Nurture] Nurture sequence complete');
 };
 
 app.use(cors({ origin: '*' }));
@@ -2262,11 +2643,50 @@ app.post('/check-expiring-trials', async (req, res) => {
         
         await checkExpiringTrials();
         await checkExpiredTrials();
+        await runNurtureSequence();
         
-        res.json({ success: true, message: 'Trial check completed' });
+        res.json({ success: true, message: 'Trial check + nurture sequence completed' });
     } catch (error) {
         console.error('Trial check error:', error);
         res.status(500).json({ error: 'Failed to check trials' });
+    }
+});
+
+// Test nurture email endpoint (admin only)
+app.post('/test-nurture-email', async (req, res) => {
+    try {
+        const { adminEmail, testEmail, day } = req.body;
+        
+        if (adminEmail !== 'toventuresltd@gmail.com') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        const emailTo = testEmail || adminEmail;
+        let template;
+        
+        switch(day) {
+            case 3:
+                template = emailTemplates.trialDay3;
+                break;
+            case 5:
+                template = emailTemplates.trialDay5;
+                break;
+            case 8:
+            case 'winback':
+                template = emailTemplates.trialWinback;
+                break;
+            default:
+                return res.status(400).json({ error: 'Invalid day. Use 3, 5, or 8 (winback)' });
+        }
+        
+        const result = await sendEmail(emailTo, template, {
+            userName: 'Test User'
+        });
+        
+        res.json({ success: true, day, result });
+    } catch (error) {
+        console.error('Nurture email test error:', error);
+        res.status(500).json({ error: 'Failed to send test nurture email' });
     }
 });
 
@@ -2458,6 +2878,7 @@ app.listen(PORT, '0.0.0.0', async () => {
         console.log('[Email] Running scheduled trial check...');
         await checkExpiringTrials();
         await checkExpiredTrials();
+        await runNurtureSequence();
     }, 60 * 60 * 1000); // Every hour
     
     // Run initial trial check after 30 seconds
@@ -2465,6 +2886,7 @@ app.listen(PORT, '0.0.0.0', async () => {
         console.log('[Email] Running initial trial check...');
         await checkExpiringTrials();
         await checkExpiredTrials();
+        await runNurtureSequence();
     }, 30000);
     
     // Send startup notification
